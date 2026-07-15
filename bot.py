@@ -142,11 +142,11 @@ async def msg(update, ctx):
         user["path"] = [lid for ctitle, sl in TIERS[tier] for lid in course_lessons(ctitle)[sl]]
         user["path_i"] = 0; user["stage"] = "menu"; save_users(u)
         await update.message.reply_text(f"🧭 Assessment done. Your level: *{tier}*.\nI've built a {len(user['path'])}-lesson path for you.\n\nCommands now:\n• `next` — your adaptive lesson\n• `topics` — browse all 8 courses\n• `search <keyword>` — find any lesson\n• `level` — re-assess")
-        return await send_path_lesson(update, user)
+        return await send_path_lesson(update, user, cid)
 
     # ----- paid menu -----
     if user["stage"] == "menu":
-        if low == "next": return await send_path_lesson(update, user)
+        if low == "next": return await send_path_lesson(update, user, cid)
         if low == "topics":
             lines = "\n".join(f"  {i+1}. {c['title']} ({len(c['lessons'])} lessons)" for i, c in enumerate(COURSES))
             return await update.message.reply_text("📚 All courses — reply the number to dive in:\n" + lines)
@@ -159,13 +159,23 @@ async def msg(update, ctx):
             return await update.message.reply_text("🔎 Found:\n" + "\n".join(f"  • {h['title']} ({h['course']})" for h in hits))
         if low.isdigit() and 1 <= int(low) <= len(COURSES):
             c = COURSES[int(low) - 1]
-            return await update.message.reply_text(f"📖 {c['title']} — reply a lesson number 1–{len(c['lessons'])} to open it.")
-        if low.isdigit() and user.get("last_course"):
-            c = course_by_title(user["last_course"]); n = int(low)
+            user["stage"] = "browse"; user["browse_course"] = c["title"]; save_users(u)
+            return await update.message.reply_text(f"📖 {c['title']} — reply a lesson number 1–{len(c['lessons'])} to open it (or 'topics' to go back).")
+        return await update.message.reply_text("Use: `next`, `topics`, `search <kw>`, `level`.")
+
+    # ----- browse a course's lessons -----
+    if user["stage"] == "browse":
+        if low == "topics":
+            user["stage"] = "menu"; save_users(u)
+            lines = "\n".join(f"  {i+1}. {c['title']} ({len(c['lessons'])} lessons)" for i, c in enumerate(COURSES))
+            return await update.message.reply_text("📚 All courses — reply the number to dive in:\n" + lines)
+        if low.isdigit():
+            c = course_by_title(user.get("browse_course", "")); n = int(low)
             if c and 1 <= n <= len(c["lessons"]):
                 lid = c["lessons"][n-1]; await update.message.reply_text(lesson_text(lid, n, len(c["lessons"])))
                 return await update.message.reply_text(outcomes_text(lid))
-        return await update.message.reply_text("Use: `next`, `topics`, `search <kw>`, `level`.")
+            return await update.message.reply_text(f"Pick a number 1–{len(c['lessons']) if c else 0}.")
+        return await update.message.reply_text("Reply a lesson number, or 'topics' to go back.")
 
     # ----- capture stages -----
     if user["stage"] == "country":
@@ -211,13 +221,15 @@ async def send_free_lesson(update, user):
     cl = course_lessons("Sing Without Limits"); lid = cl[user["pos"]]
     await update.message.reply_text(lesson_text(lid, user["pos"] + 1, len(cl)))
     await update.message.reply_text(outcomes_text(lid))
-async def send_path_lesson(update, user):
+async def send_path_lesson(update, user, cid=None):
     if user["path_i"] >= len(user["path"]):
         return await update.message.reply_text("🏆 You've completed your adaptive path! Use `topics` or `search` to keep going.")
-    lid = user["path"][user["path_i"]]; user["path_i"] += 1; save_users(user)
-    # find course for numbering
-    ctitle = LESSONS[lid]["course"]; c = course_by_title(ctitle); n = c["lessons"].index(lid) + 1
-    await update.message.reply_text(lesson_text(lid, n, len(c["lessons"])))
+    lid = user["path"][user["path_i"]]; user["path_i"] += 1
+    # persist WITHOUT clobbering other users (save_users expects the full dict)
+    allu = load_users(); allu[cid] = user; save_users(allu)
+    # path-relative numbering (course lookup is best-effort, never a hard dependency)
+    pos = user["path_i"]; total = len(user["path"])
+    await update.message.reply_text(lesson_text(lid, pos, total))
     await update.message.reply_text(outcomes_text(lid) + "\n\n(type 'next' for your next adaptive lesson)")
 
 async def flw_webhook(request):
