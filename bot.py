@@ -117,6 +117,19 @@ def create_flutter_payment(email, name, tier, cid):
         return r.json().get("data", {}).get("link"), ref
     except Exception: return None, ref
 
+def verify_payment(tx_ref):
+    """Re-query Flutterwave to confirm a tx_ref actually paid. Never trust the user."""
+    if not tx_ref:
+        return False
+    try:
+        r = requests.get("https://api.flutterwave.com/v3/transactions/verify_by_reference",
+                         params={"tx_ref": tx_ref},
+                         headers={"Authorization": f"Bearer {FLW_SECRET}"}, timeout=15)
+        j = r.json()
+        return j.get("status") == "success" and j.get("data", {}).get("status") == "successful"
+    except Exception:
+        return False
+
 async def start(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
     u[cid] = {"stage": "country", "name": "", "email": "", "course": 1, "pos": 0,
@@ -193,10 +206,13 @@ async def msg(update, ctx):
         await update.message.reply_text(f"✅ In. Starting *Sing Without Limits* ({len(cl)} lessons). First up:")
         return await send_free_lesson(update, user)
     if user["stage"] == "await_payment":
-        if low == "paid":
+        if low != "paid":
+            return await update.message.reply_text("Reply 'paid' after completing the payment link above to unlock everything.")
+        # do NOT trust the user — re-verify with Flutterwave using the stored tx_ref
+        if verify_payment(user.get("pay_ref")):
             user["paid"] = True; user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0; save_users(u)
-            return await update.message.reply_text("🎉 Payment received! Quick assessment so I serve you right.\n\nQ1. " + ASSESS[0][0])
-        return await update.message.reply_text("Reply 'paid' after completing the payment link above to unlock everything.")
+            return await update.message.reply_text("🎉 Payment confirmed! Quick assessment so I serve you right.\n\nQ1. " + ASSESS[0][0])
+        return await update.message.reply_text("🔍 I checked with Flutterwave and this payment isn't confirmed yet. Finish the payment link, then reply 'paid' again. If you already paid, wait a minute and try once more.")
 
     # ----- free lessons -----
     if user["stage"] == "learning":
@@ -236,9 +252,12 @@ async def flw_webhook(request):
     try: data = await request.json()
     except Exception: return web.Response(text="bad", status=400)
     if FLW_HASH and request.headers.get("verif-hash") != FLW_HASH: return web.Response(text="no", status=403)
-    d = data.get("data", {})
-    if data.get("event") in ("charge.completed",) and d.get("status") == "successful":
-        tx = d.get("tx_ref"); users = load_users()
+    if data.get("event") in ("charge.completed",) and data.get("data", {}).get("status") == "successful":
+        tx = data.get("data", {}).get("tx_ref")
+        # re-verify with Flutterwave before granting access (don't trust raw payload)
+        if not verify_payment(tx):
+            return web.Response(text="unverified", status=500)  # Flutterwave retries
+        users = load_users()
         for cid, u in users.items():
             if u.get("pay_ref") == tx:
                 u["paid"] = True; u["stage"] = "assess"; u["assess_q"] = 0; u["assess_score"] = 0; save_users(users); break
