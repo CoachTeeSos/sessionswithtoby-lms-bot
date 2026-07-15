@@ -63,7 +63,7 @@ def _sheets_svc():
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
     creds = oc.Credentials.from_authorized_user_file(
-        "/data/google_token.json", ["https://www.googleapis.com/auth/spreadsheets"])
+        os.environ.get("GOOGLE_TOKEN_PATH", "/data/google_token.json"), ["https://www.googleapis.com/auth/spreadsheets"])
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
     return build("sheets", "v4", credentials=creds), creds
@@ -232,6 +232,9 @@ async def flw_webhook(request):
                 u["paid"] = True; u["stage"] = "assess"; u["assess_q"] = 0; u["assess_score"] = 0; save_users(users); break
     return web.Response(text="ok")
 
+async def healthz(request):
+    return web.Response(text="ok")
+
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -239,6 +242,7 @@ async def main():
     await app.initialize(); await app.start()
     asyncio.create_task(app.updater.start_polling())
     web_app = web.Application(); web_app.router.add_post("/flutterwave-webhook", flw_webhook)
+    web_app.router.add_get("/healthz", healthz)
     runner = web.AppRunner(web_app); await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8000))).start()
     print("Bot + webhook listening")
