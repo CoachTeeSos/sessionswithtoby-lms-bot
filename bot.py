@@ -57,23 +57,33 @@ def save_users(u):
     if SHEET_ID: sheet_write(u)
     else: json.dump(u, open(USERS, "w"), indent=2)
 
-# --- Google Sheet backend (latent until SHEET_ID + creds present) ---
+# --- Google Sheet backend (live: token at /data/google_token.json) ---
+def _sheets_svc():
+    import google.oauth2.credentials as oc
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    creds = oc.Credentials.from_authorized_user_file(
+        "/data/google_token.json", ["https://www.googleapis.com/auth/spreadsheets"])
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    return build("sheets", "v4", credentials=creds), creds
 def sheet_read():
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("google_api", os.path.join(BASE, "google_api.py"))
-        ga = importlib.util.module_from_spec(spec); spec.loader.exec_module(ga)
-        rows = ga.sheets_get(SHEET_ID, "Users!A:Z")
-        return {r[0]: json.loads(r[1]) for r in rows[1:] if r}
-    except Exception: return None
+        svc, _ = _sheets_svc()
+        res = svc.spreadsheets().values().get(spreadsheetId=SHEET_ID, range="Users!A:Z").execute()
+        rows = res.get("values", [])
+        return {r[0]: json.loads(r[1]) for r in rows[1:] if len(r) >= 2}
+    except Exception as e:
+        print("sheet_read err:", e); return None
 def sheet_write(u):
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("google_api", os.path.join(BASE, "google_api.py"))
-        ga = importlib.util.module_from_spec(spec); spec.loader.exec_module(ga)
-        vals = [["chat_id", "data"]] + [[k, json.dumps(v)] for k, v in u.items()]
-        ga.sheets_update(SHEET_ID, "Users!A:Z", vals)
-    except Exception: pass
+        svc, _ = _sheets_svc()
+        vals = [["chat_id", "data_json"]] + [[k, json.dumps(v)] for k, v in u.items()]
+        svc.spreadsheets().values().update(
+            spreadsheetId=SHEET_ID, range="Users!A:Z",
+            valueInputOption="RAW", body={"values": vals}).execute()
+    except Exception as e:
+        print("sheet_write err:", e)
 
 def course_lessons(title):
     c = next((c for c in COURSES if c["title"].lower() == title.lower()), COURSES[0])
