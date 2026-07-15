@@ -1,0 +1,226 @@
+[
+  {
+    "id": 1,
+    "title": "Sing Without Limits",
+    "level": "Beginner",
+    "lessons": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      60,
+      61,
+      62,
+      63,
+      65,
+      66,
+      70,
+      82,
+      83,
+      84,
+      85,
+      86,
+      93,
+      94,
+      96
+    ],
+    "weeks": 12,
+    "credits": 3,
+    "outcomeSummary": [
+      "Stand, breathe, and vocalize without tension",
+      "Build stamina for consistent singing",
+      "Unlock your first reliable mixed voice moment"
+    ]
+  },
+  {
+    "id": 2,
+    "title": "Hear Anything, Repeat Anything",
+    "level": "Intermediate",
+    "lessons": [
+      8,
+      9,
+      10,
+      11,
+      12,
+      17,
+      28,
+      29,
+      30,
+      31,
+      47,
+      48,
+      49,
+      50,
+      51,
+      67,
+      68,
+      69,
+      71
+    ],
+    "weeks": 6,
+    "credits": 3,
+    "outcomeSummary": [
+      "Name intervals and chords by ear",
+      "Transcribe melodies from songs",
+      "Sing tight harmonies on demand"
+    ]
+  },
+  {
+    "id": 3,
+    "title": "Train Your Musical instincts",
+    "level": "Intermediate",
+    "lessons": [
+      13,
+      14,
+      32,
+      33,
+      52,
+      53,
+      64,
+      72,
+      73
+    ],
+    "weeks": 3,
+    "credits": 3,
+    "outcomeSummary": [
+      "Clap and count complex rhythms",
+      "Memorize solos and parts fast",
+      "Lock into tempo without drifting"
+    ]
+  },
+  {
+    "id": 4,
+    "title": "Perform Like You Mean It",
+    "level": "Intermediate",
+    "lessons": [
+      15,
+      16,
+      34,
+      35,
+      36,
+      54,
+      55,
+      56,
+      74,
+      75,
+      76,
+      77,
+      78,
+      98,
+      99
+    ],
+    "weeks": 5,
+    "credits": 3,
+    "outcomeSummary": [
+      "Own the stage in 60 seconds",
+      "Connect lyrics to audience emotion",
+      "Recover from mistakes without breaking character"
+    ]
+  },
+  {
+    "id": 5,
+    "title": "Think Like A Career Vocalist",
+    "level": "Intermediate",
+    "lessons": [
+      18,
+      95,
+      101,
+      102
+    ],
+    "weeks": 2,
+    "credits": 2,
+    "outcomeSummary": [
+      "Build routines that scale your voice",
+      "Use journaling to accelerate progress",
+      "Handle pressure, doubt, and audition nerves"
+    ]
+  },
+  {
+    "id": 6,
+    "title": "Sing Any Genre, On Command",
+    "level": "Advanced",
+    "lessons": [
+      37,
+      38,
+      57,
+      58,
+      79,
+      80,
+      81
+    ],
+    "weeks": 2,
+    "credits": 2,
+    "outcomeSummary": [
+      "Switch tone between R&B, pop, and gospel",
+      "Use riffs safely without strain",
+      "Adapt your voice to backing tracks in real time"
+    ]
+  },
+  {
+    "id": 7,
+    "title": "Get Paid To Sing",
+    "level": "Advanced",
+    "lessons": [
+      39,
+      59,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      97,
+      100
+    ],
+    "weeks": 3,
+    "credits": 3,
+    "outcomeSummary": [
+      "Package your voice for church, studio, or stage",
+      "Price and pitch gigs without awkwardness",
+      "Convert one performance into repeat bookings"
+    ]
+  },
+  {
+    "id": 8,
+    "title": "Make Records, Not excuses",
+    "level": "Professional",
+    "lessons": [
+      110,
+      111,
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119
+    ],
+    "weeks": 3,
+    "credits": 3,
+    "outcomeSummary": [
+      "Record clean vocals with phone or laptop",
+      "Mix and share a song you wrote",
+      "Turn finished tracks into a releasable EP"
+    ]
+  }
+]
