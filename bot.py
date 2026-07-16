@@ -11,7 +11,8 @@ Flow:
        * level        : re-take assessment
   User store: Google Sheet if configured, else local users.json (same schema).
 """
-import os, json, uuid, asyncio, re, requests, threading
+import os, json, uuid, asyncio, re, requests, threading, hashlib
+from datetime import datetime, timezone
 from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -37,6 +38,9 @@ COUNTRY_MAP = {"nigeria": "NG", "ghana": "GH", "usa": "US", "united states": "US
                "uk": "GB", "united kingdom": "GB", "england": "GB", "canada": "CA",
                "kenya": "KE", "south africa": "ZA"}
 FREE_LESSONS = 3
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "SessionsWithTobyBot")
+REFERRAL_REWARD = {"NG": 1000, "GH": 16, "US": 3, "GB": 3, "CA": 4, "KE": 300, "ZA": 30}
+def make_ref_code(cid): return "SWT" + hashlib.md5(cid.encode()).hexdigest()[:6].upper()
 
 # Behavioral skill assessment: 4 questions -> tier
 ASSESS = [
@@ -121,6 +125,22 @@ def course_lessons(title):
     return c["lessons"]
 def course_by_title(title): return next((c for c in COURSES if c["title"].lower() == title.lower()), None)
 def price_for(cc): return PRICE_TIERS.get((cc or "").upper(), DEFAULT_TIER)
+def credit_referral(users, cid):
+    """Award the referrer when `cid` converts to paid. Idempotent."""
+    u = users.get(cid, {})
+    rb = u.get("referred_by")
+    if not rb or rb not in users or u.get("referral_credited"):
+        return
+    ref = users[rb]
+    ccy = price_for(ref.get("country") or "US")["currency"]
+    reward = REFERRAL_REWARD.get(ref.get("country") or "US", 3)
+    ref["referrals_paid"] = ref.get("referrals_paid", 0) + 1
+    ref["referral_earnings"] = ref.get("referral_earnings", 0) + reward
+    ref["pending_reward_msg"] = (
+        f"\U0001F389 A singer you referred just unlocked the full course! "
+        f"You earned {CCY[ccy]}{reward}. Share your profile card to earn more.")
+    u["referral_credited"] = True
+    users[rb] = ref; users[cid] = u
 def lesson_text(lid, pos, total):
     l = LESSONS.get(lid, {})
     steps = [s for s in l.get("steps", [])][:3]
@@ -167,17 +187,44 @@ def verify_payment(tx_ref):
 
 async def start(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
+    # returning paid user: never wipe progress
+    if cid in u and u[cid].get("paid"):
+        return await update.message.reply_text(
+            f"\U0001F44B Welcome back, {u[cid]['name'].split()[0]}! Use `next`, `profile`, or `topics`.")
+    # parse referral deep-link: /start <REFCODE>
+    args = getattr(ctx, "args", None) or []
+    payload = (args[0] if args else "").strip().upper()
+    referred_by = None
+    if payload:
+        for oid, ou in u.items():
+            if ou.get("ref_code") == payload and oid != cid:
+                referred_by = oid; break
+    ref_code = (u.get(cid, {}) or {}).get("ref_code") or make_ref_code(cid)
     u[cid] = {"stage": "country", "name": "", "email": "", "course": 1, "pos": 0,
               "country": None, "paid": False, "pay_ref": None, "upsold": False,
-              "tier": None, "assess_q": 0, "assess_score": 0, "path": [], "path_i": 0}
+              "tier": None, "assess_q": 0, "assess_score": 0, "path": [], "path_i": 0,
+              "ref_code": ref_code, "referred_by": referred_by, "referrals": [],
+              "referrals_paid": 0, "referral_earnings": 0, "lessons_done": 0,
+              "joined": datetime.now(timezone.utc).isoformat(), "pending_reward_msg": ""}
+    if referred_by and referred_by in u:
+        u[referred_by].setdefault("referrals", []).append(cid)
     save_users(u)
-    await update.message.reply_text("🎤 Welcome to SessionsWithToby — I coach your voice, one real lesson at a time.\n\nWhich country are you in? (e.g. Nigeria, USA, UK)")
+    extra = (" \U0001F49B You joined through a friend's link \u2014 they'll earn when you unlock. Welcome!"
+             if referred_by else
+             " Finish 3 free lessons, then share your profile card to earn when friends join.")
+    await update.message.reply_text(
+        "\U0001F3A4 Welcome to SessionsWithToby \u2014 I coach your voice, one real lesson at a time." + extra +
+        "\n\nWhich country are you in? (e.g. Nigeria, USA, UK)")
 
 async def msg(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
     if cid not in u: return await start(update, ctx)
     user = u[cid]; text = update.message.text.strip()
     low = text.lower()
+
+    # ----- referral reward alert (fires on any inbound message) -----
+    if user.get("pending_reward_msg"):
+        await update.message.reply_text(user.pop("pending_reward_msg")); save_users(u)
 
     # ----- assessment (post-pay) -----
     if user["stage"] == "assess":
@@ -189,11 +236,12 @@ async def msg(update, ctx):
         tier = TIER_FROM_SCORE(user["assess_score"]); user["tier"] = tier
         user["path"] = [lid for ctitle, sl in TIERS[tier] for lid in course_lessons(ctitle)[sl]]
         user["path_i"] = 0; user["stage"] = "menu"; save_users(u)
-        await update.message.reply_text(f"🧭 Assessment done. Your level: *{tier}*.\nI've built a {len(user['path'])}-lesson path for you.\n\nCommands now:\n• `next` — your adaptive lesson\n• `topics` — browse all 8 courses\n• `search <keyword>` — find any lesson\n• `level` — re-assess")
+        await update.message.reply_text(f"\U0001F9ED Assessment done. Your level: *{tier}*.\nI've built a {len(user['path'])}-lesson path for you.\n\nCommands now:\n• `next` — your adaptive lesson\n• `topics` — browse all 8 courses\n• `search <keyword>` — find any lesson\n• `level` — re-assess\n• `profile` — your shareable Vocal Profile Card")
         return await send_path_lesson(update, user, cid)
 
     # ----- paid menu -----
     if user["stage"] == "menu":
+        if low in ("profile", "card", "refer"): return await profile(update, ctx)
         if low == "next": return await send_path_lesson(update, user, cid)
         if low == "topics":
             lines = "\n".join(f"  {i+1}. {c['title']} ({len(c['lessons'])} lessons)" for i, c in enumerate(COURSES))
@@ -245,7 +293,8 @@ async def msg(update, ctx):
             return await update.message.reply_text("Reply 'paid' after completing the payment link above to unlock everything.")
         # do NOT trust the user — re-verify with Flutterwave using the stored tx_ref
         if verify_payment(user.get("pay_ref")):
-            user["paid"] = True; user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0; save_users(u)
+            user["paid"] = True; user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0
+            credit_referral(u, cid); save_users(u)
             return await update.message.reply_text("🎉 Payment confirmed! Quick assessment so I serve you right.\n\nQ1. " + ASSESS[0][0])
         return await update.message.reply_text("🔍 I checked with Flutterwave and this payment isn't confirmed yet. Finish the payment link, then reply 'paid' again. If you already paid, wait a minute and try once more.")
 
@@ -254,7 +303,8 @@ async def msg(update, ctx):
         if low == "repeat": return await send_free_lesson(update, user)
         if low != "done":
             return await update.message.reply_text("When you've finished this lesson, reply 'done' (or 'repeat').")
-        cl = course_lessons("Sing Without Limits"); user["pos"] += 1; save_users(u)
+        cl = course_lessons("Sing Without Limits"); user["pos"] += 1
+        user["lessons_done"] = user.get("lessons_done", 0) + 1; save_users(u)
         if user["pos"] == FREE_LESSONS and not user["upsold"]:
             user["upsold"] = True; save_users(u)
             tier = price_for(user["country"]); link, ref = create_flutter_payment(user["email"], user["name"], tier, cid)
@@ -276,12 +326,43 @@ async def send_path_lesson(update, user, cid=None):
     if user["path_i"] >= len(user["path"]):
         return await update.message.reply_text("🏆 You've completed your adaptive path! Use `topics` or `search` to keep going.")
     lid = user["path"][user["path_i"]]; user["path_i"] += 1
+    user["lessons_done"] = user.get("lessons_done", 0) + 1
     # persist WITHOUT clobbering other users (save_users expects the full dict)
     allu = load_users(); allu[cid] = user; save_users(allu)
     # path-relative numbering (course lookup is best-effort, never a hard dependency)
     pos = user["path_i"]; total = len(user["path"])
     await update.message.reply_text(lesson_text(lid, pos, total))
     await update.message.reply_text(outcomes_text(lid) + "\n\n(type 'next' for your next adaptive lesson)")
+
+INNER = 32
+def _row(s): return "║ " + s[:INNER].ljust(INNER) + " ║"
+def render_profile(user):
+    ccy = price_for(user.get("country") or "US")["currency"]; sym = CCY[ccy]
+    tier = user.get("tier") or "Free"; country = user.get("country") or "—"
+    done = user.get("lessons_done", 0); pi = user.get("path_i", 0); pt = len(user.get("path", []))
+    refs = len(user.get("referrals", [])); conv = user.get("referrals_paid", 0)
+    earned = user.get("referral_earnings", 0)
+    link = f"https://t.me/{BOT_USERNAME}?start={user.get('ref_code','')}"
+    reward = REFERRAL_REWARD.get(user.get("country") or "US", 3)
+    lines = [f"\U0001F3A4 VOCAL PROFILE CARD", f"Name: {user.get('name') or 'Singer'}",
+             f"\U0001F30D {country}  ·  Tier: {tier}", f"Lessons done: {done}",
+             (f"Path: {pi}/{pt}" if pt else "Path: —"),
+             f"Invited: {refs}  ·  Converted: {conv}", f"Earned: {sym}{earned}"]
+    bar = "═" * (INNER + 2)
+    out = ["╔" + bar + "╗", _row(lines[0].center(INNER)), "╠" + bar + "╣"]
+    for ln in lines[1:]: out.append(_row(ln))
+    out.append("╚" + bar + "╝")
+    return "\n".join(out)
+
+async def profile(update, ctx):
+    u = load_users(); cid = str(update.effective_chat.id)
+    if cid not in u: return await start(update, ctx)
+    user = u[cid]
+    ccy = price_for(user.get("country") or "US")["currency"]; reward = REFERRAL_REWARD.get(user.get("country") or "US", 3)
+    link = f"https://t.me/{BOT_USERNAME}?start={user.get('ref_code','')}"
+    await update.message.reply_text(render_profile(user))
+    await update.message.reply_text(f"\U0001F517 Your invite link (tap to share):\n{link}\n\nRefer a friend, earn {CCY[ccy]}{reward} each time they unlock \U0001F4B0")
+    await update.message.reply_text("\U0001F4E4 Share this card on your status/Story — every friend who joins via your link earns you a reward when they unlock.")
 
 async def flw_webhook(request):
     try: data = await request.json()
@@ -295,7 +376,8 @@ async def flw_webhook(request):
         users = load_users()
         for cid, u in users.items():
             if u.get("pay_ref") == tx:
-                u["paid"] = True; u["stage"] = "assess"; u["assess_q"] = 0; u["assess_score"] = 0; save_users(users); break
+                u["paid"] = True; u["stage"] = "assess"; u["assess_q"] = 0; u["assess_score"] = 0
+                credit_referral(users, cid); save_users(users); break
     return web.Response(text="ok")
 
 async def healthz(request):
@@ -304,6 +386,9 @@ async def healthz(request):
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("profile", profile))
+    app.add_handler(CommandHandler("card", profile))
+    app.add_handler(CommandHandler("refer", profile))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
     await app.initialize(); await app.start()
     asyncio.create_task(app.updater.start_polling())
