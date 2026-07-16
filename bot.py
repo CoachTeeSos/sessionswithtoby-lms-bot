@@ -11,7 +11,7 @@ Flow:
        * level        : re-take assessment
   User store: Google Sheet if configured, else local users.json (same schema).
 """
-import os, json, uuid, asyncio, re, requests
+import os, json, uuid, asyncio, re, requests, threading
 from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -49,13 +49,41 @@ TIERS = {  # tier -> ordered lesson windows (course, slice) for adaptive serving
 }
 TIER_FROM_SCORE = lambda s: "Beginner" if s <= 6 else "Intermediate" if s <= 9 else "Advanced"
 
+_USER_LOCK = threading.Lock()
+_USERS_CACHE = {}  # last-good copy; survives transient storage read failures so we never wipe everyone
+
 def load_users():
-    if SHEET_ID:
-        return sheet_read() or {}
-    return json.load(open(USERS)) if os.path.exists(USERS) else {}
+    with _USER_LOCK:
+        if SHEET_ID:
+            data = sheet_read()
+            if data is not None:
+                _USERS_CACHE.clear(); _USERS_CACHE.update(data)
+            return dict(_USERS_CACHE) or {}
+        try:
+            data = json.load(open(USERS)) if os.path.exists(USERS) else {}
+            _USERS_CACHE.clear(); _USERS_CACHE.update(data)
+            return data
+        except Exception:
+            if _USERS_CACHE:
+                return dict(_USERS_CACHE)
+            return {}
 def save_users(u):
-    if SHEET_ID: sheet_write(u)
-    else: json.dump(u, open(USERS, "w"), indent=2)
+    with _USER_LOCK:
+        _USERS_CACHE.clear(); _USERS_CACHE.update(u)
+        if SHEET_ID:
+            sheet_write(u)
+            return
+        # merge on-disk changes written since u was loaded (prevents cross-user clobber)
+        if os.path.exists(USERS):
+            try:
+                on_disk = json.load(open(USERS))
+                on_disk.update(u)
+                u = on_disk
+            except Exception:
+                pass
+        tmp = USERS + ".tmp"
+        json.dump(u, open(tmp, "w"), indent=2)
+        os.replace(tmp, USERS)
 
 # --- Google Sheet backend (live: token at /data/google_token.json) ---
 def _sheets_svc():

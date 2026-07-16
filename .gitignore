@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .env
 *.json.bak
+users.json
+users.json.tmp
+.env.*
