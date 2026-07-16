@@ -59,6 +59,41 @@ TIER_FROM_SCORE = lambda s: "Beginner" if s <= 6 else "Intermediate" if s <= 9 e
 _USER_LOCK = threading.Lock()
 _USERS_CACHE = {}  # last-good copy; survives transient storage read failures so we never wipe everyone
 
+# --- per-user serial queue -------------------------------------------------
+# Each chat gets ONE worker that processes its updates strictly in order.
+# Without this, two rapid messages from the same user (e.g. concurrent 'done')
+# both load the same state, both mutate, and the last save CLOBBERS the other's
+# progress. The queue makes per-user updates atomic in practice.
+_USER_QUEUES = {}
+_Q_LOCK = threading.Lock()
+
+async def _user_worker(cid, q):
+    while True:
+        update, ctx, handler = await q.get()
+        try:
+            await handler(update, ctx)
+        except Exception as e:
+            print("user worker error:", cid, e)
+        finally:
+            q.task_done()
+
+async def _enqueue(update, ctx, handler):
+    cid = str(update.effective_chat.id)
+    with _Q_LOCK:
+        q = _USER_QUEUES.get(cid)
+        if q is None:
+            q = asyncio.Queue()
+            _USER_QUEUES[cid] = q
+            asyncio.create_task(_user_worker(cid, q))
+    await q.put((update, ctx, handler))
+
+async def start(update, ctx):
+    await _enqueue(update, ctx, _start)
+async def msg(update, ctx):
+    await _enqueue(update, ctx, _msg)
+async def profile(update, ctx):
+    await _enqueue(update, ctx, _profile)
+
 def load_users():
     with _USER_LOCK:
         if SHEET_ID:
@@ -150,9 +185,12 @@ def lesson_text(lid, pos, total):
     steps = [s for s in l.get("steps", [])][:3]
     c = l.get("course", "")
     chead = COURSE_ICON.get(c, "🎵")
+    outcome = l.get("displayOutcome") or (l.get("outcomes") or [""])[0]
+    scn = (f"Imagine you're {l.get('title','')} in a real session: {outcome[0].lower()}{outcome[1:]}.")
     b = (f"{chead} Lesson {pos} of {total} — {l.get('title','')} "
          f"({l.get('durationMin','')} min) · {c}\n\n"
-         f"🎯 Why this matters: {l.get('displayOutcome') or l.get('outcomes',[''])[0]}\n")
+         f"🎯 The outcome you'll walk away with:\n   {outcome}\n\n"
+         f"🎬 Use-case scenario:\n   {scn} This lesson is the drill that makes that automatic.\n")
     for i, s in enumerate(steps, 1):
         t = s.get("type", "teach")
         icon = STEP_ICON.get(t, "▸"); label = STEP_LABEL.get(t, "STEP")
@@ -199,7 +237,7 @@ def verify_payment(tx_ref):
     except Exception:
         return False
 
-async def start(update, ctx):
+async def _start(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
     # returning paid user: never wipe progress
     if cid in u and u[cid].get("paid"):
@@ -230,9 +268,9 @@ async def start(update, ctx):
         "\U0001F3A4 Welcome to SessionsWithToby \u2014 I coach your voice, one real lesson at a time." + extra +
         "\n\nWhich country are you in? (e.g. Nigeria, USA, UK)")
 
-async def msg(update, ctx):
+async def _msg(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
-    if cid not in u: return await start(update, ctx)
+    if cid not in u: return await _start(update, ctx)
     user = u[cid]; text = update.message.text.strip()
     low = text.lower()
 
@@ -368,9 +406,9 @@ def render_profile(user):
     out.append("╚" + bar + "╝")
     return "\n".join(out)
 
-async def profile(update, ctx):
+async def _profile(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
-    if cid not in u: return await start(update, ctx)
+    if cid not in u: return await _start(update, ctx)
     user = u[cid]
     ccy = price_for(user.get("country") or "US")["currency"]; reward = REFERRAL_REWARD.get(user.get("country") or "US", 3)
     link = f"https://t.me/{BOT_USERNAME}?start={user.get('ref_code','')}"
