@@ -19,7 +19,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 BASE = os.path.dirname(os.path.abspath(__file__))
 LESSONS = {l["id"]: l for l in json.load(open(os.path.join(BASE, "lessons.json")))}
 COURSES = json.load(open(os.path.join(BASE, "courses.json")))
-USERS = os.path.join(BASE, "users.json")
+USERS = os.environ.get("USERS_PATH", os.path.join(BASE, "users.json"))
 FLW_SECRET = os.environ["FLUTTERWAVE_SECRET_KEY"]
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 FLW_HASH = os.environ.get("FLUTTERWAVE_WEBHOOK_HASH", "")

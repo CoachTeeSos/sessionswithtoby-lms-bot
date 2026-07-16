@@ -4,6 +4,12 @@
   "deploy": {
     "startCommand": "python bot.py",
     "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
+    "restartPolicyMaxRetries": 10,
+    "environment": {
+      "USERS_PATH": "/data/users.json"
+    },
+    "volumes": [
+      { "name": "userdata", "dir": "/data", "size": 0.5 }
+    ]
   }
 }
