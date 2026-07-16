@@ -191,6 +191,25 @@ def progress_bar(done, total, width=5):
     filled = min(width, max(1, round((done / total) * width))) if total and done < total else (width if total else 0)
     return "▰" * filled + "▱" * (width - filled) + f" {done}/{total}"
 
+# --- coach voice (humanization layer) -----------------------------------
+# Goal phrasing from assessment Q4 (1=sing without embarrassment, 2=sound good, 3=go pro)
+GOAL_PHRASE = {1: "sing without embarrassment", 2: "sound good every time you perform",
+               3: "go pro and get paid to sing"}
+# Words that signal a learner is struggling -> trigger empathy, not a hard push
+STRUGGLE_WORDS = ("hard", "can't", "cant", "difficult", "stuck", "confused",
+                  "weird", "pain", "hurt", "struggle", "impossible", "tone deaf")
+def first_name(user):
+    for k in ("first_name", "name"):
+        v = (user.get(k) or "").strip()
+        if v:
+            return v.split()[0]
+    return "singer"
+def goal_line(user):
+    return GOAL_PHRASE.get(user.get("goal")) or "become a stronger singer"
+def is_struggling(text):
+    t = (text or "").lower()
+    return any(w in t for w in STRUGGLE_WORDS)
+
 def lesson_text(lid, pos, total):
     l = LESSONS.get(lid, {})
     steps = [s for s in l.get("steps", [])][:3]
@@ -214,7 +233,7 @@ def outcomes_text(lid):
     return ("✅ By the end you'll be able to:\n"
             + "\n".join(f"   ✓ {o}" for o in l.get("outcomes", []))
             + (f"\n\n🎙️ Your task: {pt.get('prompt','')}" if pt.get("prompt") else "")
-            + "\n\n👉 Reply 'done' (or 'repeat'). After unlock: use 'next', 'topics', 'search <kw>'.")
+            + "\n\n👉 When you're done, reply 'done' — or tell me how it felt in one word and I'll adjust.")
 
 def search_lessons(kw):
     kw = kw.lower()
@@ -253,8 +272,11 @@ async def _start(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
     # returning paid user: never wipe progress
     if cid in u and u[cid].get("paid"):
+        nm = first_name(u[cid]); g = goal_line(u[cid]); done = u[cid].get("lessons_done", 0)
         return await update.message.reply_text(
-            f"\U0001F44B Welcome back, {u[cid]['name'].split()[0]}! Use `next`, `profile`, or `topics`.")
+            f"Good to see you again, {nm}. 🙏\n\n"
+            f"You're working toward {g}. You've done {done} lessons so far — pick up wherever you left off.\n\n"
+            f"Use `next` for your next lesson, `profile` for your card, or `topics` to browse.")
     # parse referral deep-link: /start <REFCODE>
     args = getattr(ctx, "args", None) or []
     payload = (args[0] if args else "").strip().upper()
@@ -269,6 +291,7 @@ async def _start(update, ctx):
               "tier": None, "assess_q": 0, "assess_score": 0, "path": [], "path_i": 0,
               "ref_code": ref_code, "referred_by": referred_by, "referrals": [],
               "referrals_paid": 0, "referral_earnings": 0, "lessons_done": 0,
+              "first_name": "", "goal": 0,
               "joined": datetime.now(timezone.utc).isoformat(), "pending_reward_msg": ""}
     if referred_by and referred_by in u:
         u[referred_by].setdefault("referrals", []).append(cid)
@@ -294,13 +317,18 @@ async def _msg(update, ctx):
     if user["stage"] == "assess":
         if low not in ASSESS[user["assess_q"]][1]:
             return await update.message.reply_text("Reply with a number: " + " / ".join(ASSESS[user["assess_q"]][1]))
+        if user["assess_q"] == len(ASSESS) - 1:
+            user["goal"] = int(low)   # Q4 = main goal, used for personalized coaching
         user["assess_score"] += int(low); user["assess_q"] += 1; save_users(u)
         if user["assess_q"] < len(ASSESS):
             return await update.message.reply_text(assess_prompt(user["assess_q"]))
         tier = TIER_FROM_SCORE(user["assess_score"]); user["tier"] = tier
         user["path"] = [lid for ctitle, sl in TIERS[tier] for lid in course_lessons(ctitle)[sl]]
         user["path_i"] = 0; user["stage"] = "menu"; save_users(u)
-        await update.message.reply_text(f"\U0001F9ED Assessment done. Your level: *{tier}*.\nI've built a {len(user['path'])}-lesson path for you.\n\nCommands now:\n• `next` — your adaptive lesson\n• `topics` — browse all 8 courses\n• `search <keyword>` — find any lesson\n• `level` — re-assess\n• `profile` — your shareable Vocal Profile Card")
+        await update.message.reply_text(
+            f"\U0001F9ED Assessment done. Your level: *{tier}*.\n"
+            f"Since your goal is to {goal_line(user)}, I've built a {len(user['path'])}-lesson path aimed right at that.\n\n"
+            f"Commands now:\n• `next` — your adaptive lesson\n• `topics` — browse all 8 courses\n• `search <keyword>` — find any lesson\n• `level` — re-assess\n• `profile` — your shareable Vocal Profile Card")
         return await send_path_lesson(update, user, cid)
 
     # ----- paid menu -----
@@ -344,7 +372,7 @@ async def _msg(update, ctx):
         user["country"] = cc; user["stage"] = "name"; save_users(u)
         return await update.message.reply_text("📍 Got it. What should I call you?")
     if user["stage"] == "name":
-        user["name"] = text; user["stage"] = "email"; save_users(u)
+        user["name"] = text; user["first_name"] = text.split()[0]; user["stage"] = "email"; save_users(u)
         return await update.message.reply_text(f"Nice, {text.split()[0]}! Drop your email so I can save your progress:")
     if user["stage"] == "email":
         if "@" not in low: return await update.message.reply_text("That's not an email — try again:")
@@ -366,7 +394,16 @@ async def _msg(update, ctx):
     if user["stage"] == "learning":
         if low == "repeat": return await send_free_lesson(update, user)
         if low != "done":
-            return await update.message.reply_text("When you've finished this lesson, reply 'done' (or 'repeat').")
+            if is_struggling(text):
+                return await update.message.reply_text(
+                    f"Hey, {first_name(user)} — hitting a wall here is completely normal. "
+                    f"Most singers do at this exact spot.\n\n"
+                    f"Don't force it. Type 'repeat' to run the lesson again, or tell me in one line "
+                    f"what's tripping you up and I'll point you at the right drill.")
+            return await update.message.reply_text(
+                f"When you've finished this lesson, reply 'done'.\n\n"
+                f"Or just tell me how it felt — 'tight', 'easy', 'confused' — "
+                f"I read every reply and steer you from there.")
         cl = course_lessons("Sing Without Limits"); user["pos"] += 1
         user["lessons_done"] = user.get("lessons_done", 0) + 1; save_users(u)
         if user["pos"] == FREE_LESSONS and not user["upsold"]:
@@ -374,13 +411,24 @@ async def _msg(update, ctx):
             tier = price_for(user["country"]); link, ref = create_flutter_payment(user["email"], user["name"], tier, cid)
             user["pay_ref"] = ref; user["stage"] = "await_payment"; save_users(u)
             sym = CCY[tier["currency"]]
+            nm = first_name(user)
+            last_lid = cl[user["pos"] - 1]
+            last_title = LESSONS.get(last_lid, {}).get("title", "your last lesson")
             await update.message.reply_text(
-                f"🔥 3 free lessons done — nice, {user['name'].split()[0]}!\n\n"
-                f"Full access (all 8 courses, AI mentor, certification) is {sym}{tier['amount']} for your region.\n\n"
-                + (f"Unlock 👉 {link}" if link else "Payment link temporarily down — message me later."))
+                f"{nm}, real talk — you finished all 3 free lessons and you didn't quit. "
+                f"That's the part most people never get past. Respect. 👏\n\n"
+                f"Your last one was '{last_title}'. If that already felt different in your voice, "
+                f"the full path is where it actually locks in.\n\n"
+                f"What's inside when you unlock: all 8 courses, your own adaptive lesson path, "
+                f"and a shareable Vocal Profile Card.\n"
+                f"For your region it's {sym}{tier['amount']} — about what one in-person lesson with me would cost.\n\n"
+                f"No pressure, no timer. Take a day, take a week. When you're ready, your unlock link is right here 👇\n"
+                + (f"{link}" if link else "Payment's having a moment — just reply and I'll get you sorted."))
             return
-        if user["pos"] < len(cl): return await send_free_lesson(update, user)
-        return await update.message.reply_text("🏆 Free path complete! Pay above to unlock the full journey.")
+        if user["pos"] < len(cl):
+            await update.message.reply_text(f"Locked in. Lesson {user['pos']} next — keep the momentum going. 🎤")
+            return await send_free_lesson(update, user)
+        return await update.message.reply_text("🏆 Free path complete! Unlock above to keep going on the full journey.")
 
 async def send_free_lesson(update, user):
     cl = course_lessons("Sing Without Limits"); lid = cl[user["pos"]]
