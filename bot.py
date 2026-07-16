@@ -20,8 +20,11 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 LESSONS = {l["id"]: l for l in json.load(open(os.path.join(BASE, "lessons.json")))}
 COURSES = json.load(open(os.path.join(BASE, "courses.json")))
 USERS = os.environ.get("USERS_PATH", os.path.join(BASE, "users.json"))
-FLW_SECRET = os.environ["FLUTTERWAVE_SECRET_KEY"]
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TEST_MODE = os.environ.get("TEST_MODE", "") == "1"  # free end-to-end test, skips Flutterwave
+FLW_SECRET = os.environ.get("FLUTTERWAVE_SECRET_KEY", "")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+if not BOT_TOKEN:
+    raise SystemExit("TELEGRAM_BOT_TOKEN is required")
 FLW_HASH = os.environ.get("FLUTTERWAVE_WEBHOOK_HASH", "")
 SHEET_ID = os.environ.get("USERS_SHEET_ID", "")  # optional: Google Sheet backend
 
@@ -139,6 +142,8 @@ def create_flutter_payment(email, name, tier, cid):
                "redirect_url": "https://coachteesos.github.io/sessionswithtoby-/",
                "customer": {"email": email, "name": name or "Student"},
                "customizations": {"title": "SessionsWithToby", "description": "Full Vocal Course Upgrade"}}
+    if TEST_MODE:
+        return "https://example.com/test-unlock (TEST MODE — no charge)", ref
     try:
         r = requests.post("https://api.flutterwave.com/v3/payments", json=payload,
                           headers={"Authorization": f"Bearer {FLW_SECRET}"}, timeout=15)
@@ -147,6 +152,8 @@ def create_flutter_payment(email, name, tier, cid):
 
 def verify_payment(tx_ref):
     """Re-query Flutterwave to confirm a tx_ref actually paid. Never trust the user."""
+    if TEST_MODE:
+        return True  # TEST MODE: never hits Flutterwave, never charged
     if not tx_ref:
         return False
     try:
