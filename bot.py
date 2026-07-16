@@ -141,16 +141,30 @@ def credit_referral(users, cid):
         f"You earned {CCY[ccy]}{reward}. Share your profile card to earn more.")
     u["referral_credited"] = True
     users[rb] = ref; users[cid] = u
+STEP_ICON = {"teach": "📖", "exercise": "🏋️", "practice": "🔁", "tip": "💡"}
+STEP_LABEL = {"teach": "LEARN", "exercise": "DO IT", "practice": "BUILD IT", "tip": "PRO TIP"}
+COURSE_ICON = {"Technique": "🎤", "Ear Training": "👂", "Performance": "🎭", "Mindset": "🧠",
+               "Theory": "🎼", "Style-Specific": "🎨", "Business": "💼", "BandLab": "🎚️"}
 def lesson_text(lid, pos, total):
     l = LESSONS.get(lid, {})
     steps = [s for s in l.get("steps", [])][:3]
-    b = f"🎤 Lesson {pos} of {total} — {l.get('title','')} ({l.get('durationMin','')} min)\n\n"
-    for s in steps: b += f"▸ {s.get('title','')}\n{s.get('body','')[:240]}\n\n"
+    c = l.get("course", "")
+    chead = COURSE_ICON.get(c, "🎵")
+    b = (f"{chead} Lesson {pos} of {total} — {l.get('title','')} "
+         f"({l.get('durationMin','')} min) · {c}\n\n"
+         f"🎯 Why this matters: {l.get('displayOutcome') or l.get('outcomes',[''])[0]}\n")
+    for i, s in enumerate(steps, 1):
+        t = s.get("type", "teach")
+        icon = STEP_ICON.get(t, "▸"); label = STEP_LABEL.get(t, "STEP")
+        b += f"\n{icon} {label} {i}/{len(steps)}: {s.get('title','')}\n{s.get('body','')[:240]}\n"
     return b.strip()
 def outcomes_text(lid):
     l = LESSONS.get(lid, {})
-    return "✅ By the end:\n" + "\n".join(f"  ✓ {o}" for o in l.get("outcomes", [])) + \
-           "\n\nReply 'done' (or 'repeat'). After payment: use 'next', 'topics', 'search <kw>'."
+    pt = l.get("performanceTask", {})
+    return ("✅ By the end you'll be able to:\n"
+            + "\n".join(f"   ✓ {o}" for o in l.get("outcomes", []))
+            + (f"\n\n🎙️ Your task: {pt.get('prompt','')}" if pt.get("prompt") else "")
+            + "\n\n👉 Reply 'done' (or 'repeat'). After unlock: use 'next', 'topics', 'search <kw>'.")
 
 def search_lessons(kw):
     kw = kw.lower()
