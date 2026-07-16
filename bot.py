@@ -118,6 +118,10 @@ def save_users(u):
         if SHEET_ID:
             sheet_write(u)
             return
+        # ensure storage dir exists (self-heals Railway volume mounts)
+        d = os.path.dirname(USERS)
+        if d and not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
         # merge on-disk changes written since u was loaded (prevents cross-user clobber)
         if os.path.exists(USERS):
             try:
@@ -460,4 +464,6 @@ async def main():
     while True: await asyncio.sleep(3600)
 
 if __name__ == "__main__":
+    # surface where state actually lives so deploy misconfig is obvious in logs
+    print(f"[storage] USERS_PATH={USERS}  SHEET_ID={'set' if SHEET_ID else 'unset'}")
     asyncio.run(main())
