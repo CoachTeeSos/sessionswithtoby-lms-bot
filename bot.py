@@ -49,6 +49,9 @@ ASSESS = [
     ("Do you perform for others (stage, church, online)? (1=never, 2=sometimes, 3=regularly)", ["1", "2", "3"]),
     ("What's your main goal? (1=sing without embarrassment, 2=sound good, 3=go pro)", ["1", "2", "3"]),
 ]
+ASSESS_EMOJI = ["📅", "👂", "🎤", "🎯"]
+def assess_prompt(q):
+    return f"{ASSESS_EMOJI[q]} Q{q+1}/{len(ASSESS)}. {ASSESS[q][0]}"
 TIERS = {  # tier -> ordered lesson windows (course, slice) for adaptive serving
     "Beginner": [("Technique", slice(0, 10)), ("Hear Anything, Repeat Anything", slice(0, 6))],
     "Intermediate": [("Technique", slice(8, 20)), ("Perform Like You Mean It", slice(0, 8))],
@@ -180,6 +183,10 @@ STEP_ICON = {"teach": "📖", "exercise": "🏋️", "practice": "🔁", "tip": 
 STEP_LABEL = {"teach": "LEARN", "exercise": "DO IT", "practice": "BUILD IT", "tip": "PRO TIP"}
 COURSE_ICON = {"Technique": "🎤", "Ear Training": "👂", "Performance": "🎭", "Mindset": "🧠",
                "Theory": "🎼", "Style-Specific": "🎨", "Business": "💼", "BandLab": "🎚️"}
+def progress_bar(done, total, width=5):
+    filled = min(width, max(1, round((done / total) * width))) if total and done < total else (width if total else 0)
+    return "▰" * filled + "▱" * (width - filled) + f" {done}/{total}"
+
 def lesson_text(lid, pos, total):
     l = LESSONS.get(lid, {})
     steps = [s for s in l.get("steps", [])][:3]
@@ -187,8 +194,9 @@ def lesson_text(lid, pos, total):
     chead = COURSE_ICON.get(c, "🎵")
     outcome = l.get("displayOutcome") or (l.get("outcomes") or [""])[0]
     scn = (f"Imagine you're {l.get('title','')} in a real session: {outcome[0].lower()}{outcome[1:]}.")
+    bar = progress_bar(pos, total)
     b = (f"{chead} Lesson {pos} of {total} — {l.get('title','')} "
-         f"({l.get('durationMin','')} min) · {c}\n\n"
+         f"({l.get('durationMin','')} min) · {c}\n{bar}\n\n"
          f"🎯 The outcome you'll walk away with:\n   {outcome}\n\n"
          f"🎬 Use-case scenario:\n   {scn} This lesson is the drill that makes that automatic.\n")
     for i, s in enumerate(steps, 1):
@@ -284,7 +292,7 @@ async def _msg(update, ctx):
             return await update.message.reply_text("Reply with a number: " + " / ".join(ASSESS[user["assess_q"]][1]))
         user["assess_score"] += int(low); user["assess_q"] += 1; save_users(u)
         if user["assess_q"] < len(ASSESS):
-            return await update.message.reply_text(f"Q{user['assess_q']+1}. {ASSESS[user['assess_q']][0]}")
+            return await update.message.reply_text(assess_prompt(user["assess_q"]))
         tier = TIER_FROM_SCORE(user["assess_score"]); user["tier"] = tier
         user["path"] = [lid for ctitle, sl in TIERS[tier] for lid in course_lessons(ctitle)[sl]]
         user["path_i"] = 0; user["stage"] = "menu"; save_users(u)
@@ -300,7 +308,7 @@ async def _msg(update, ctx):
             return await update.message.reply_text("📚 All courses — reply the number to dive in:\n" + lines)
         if low == "level":
             user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0; save_users(u)
-            return await update.message.reply_text("Re-assessing. Q1. " + ASSESS[0][0])
+            return await update.message.reply_text("Re-assessing. " + assess_prompt(0))
         if low.startswith("search "):
             kw = low[7:].strip(); hits = search_lessons(kw)
             if not hits: return await update.message.reply_text("No lessons matched. Try another word.")
@@ -347,7 +355,7 @@ async def _msg(update, ctx):
         if verify_payment(user.get("pay_ref")):
             user["paid"] = True; user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0
             credit_referral(u, cid); save_users(u)
-            return await update.message.reply_text("🎉 Payment confirmed! Quick assessment so I serve you right.\n\nQ1. " + ASSESS[0][0])
+            return await update.message.reply_text("🎉 Payment confirmed! Quick assessment so I serve you right.\n\n" + assess_prompt(0))
         return await update.message.reply_text("🔍 I checked with Flutterwave and this payment isn't confirmed yet. Finish the payment link, then reply 'paid' again. If you already paid, wait a minute and try once more.")
 
     # ----- free lessons -----
