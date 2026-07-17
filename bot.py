@@ -133,7 +133,7 @@ def save_users(u):
 
 # --- Google Sheet backend (human-readable mirror of users.json) ---
 # The Sheet is a READ-ONLY dashboard for the coach; users.json stays the source of truth.
-SHEET_COLS = ["chat_id","name","email","country","joined","paid","tier","lessons_done",
+SHEET_COLS = ["chat_id","name","email","email_captured","country","joined","paid","tier","lessons_done",
               "goal","stage","referred_by","ref_code","referrals_paid","referral_earnings"]
 GOAL_TXT = {1:"sing w/o embarrassment",2:"sound good performing",3:"go pro & get paid"}
 def _sheets_svc():
@@ -181,6 +181,7 @@ def sheet_sync(u):
             row[idx["chat_id"]] = cid
             row[idx["name"]] = d.get("name", "")
             row[idx["email"]] = d.get("email", "")
+            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
             row[idx["country"]] = d.get("country", "")
             row[idx["joined"]] = d.get("joined", "")
             row[idx["paid"]] = "YES" if d.get("paid") else "no"
@@ -444,7 +445,7 @@ async def _msg(update, ctx):
         return await update.message.reply_text(f"Nice, {text.split()[0]}! Drop your email so I can save your progress:")
     if user["stage"] == "email":
         if "@" not in low: return await update.message.reply_text("That’s not an email — try again please.")
-        user["email"] = text; user["stage"] = "time"; save_users(u)
+        user["email"] = text; user["email_captured"] = True; user["stage"] = "time"; save_users(u)
         await update.message.reply_text("How much time can you spare per session?\n\nReply:\n• 10\n• 20\n• 30\n• 45\nor just type minutes.")
         return
     if user["stage"] == "time":
