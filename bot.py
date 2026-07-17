@@ -10,11 +10,11 @@ Flow:
        * level        : re-take assessment
   User store: Google Sheet if configured, else local users.json (same schema).
 """
-import os, json, uuid, asyncio, re, requests, threading, hashlib, tempfile, tempfile
+import os, json, uuid, asyncio, re, requests, threading, hashlib, tempfile
 from datetime import datetime, timezone
 from aiohttp import web
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, CallbackQueryHandler
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 LESSONS = {l["id"]: l for l in json.load(open(os.path.join(BASE, "lessons.json")))}
@@ -93,6 +93,14 @@ def weak_skill(u):
     # pick lowest-score weak
     best = min(weaks, key=lambda k: (ms[str(k)].get('last_score',0), k))
     return best
+
+import asyncio as _asyncio
+async def _chunky_reply(update, text, delay=0.65):
+    parts=[p.strip() for p in text.split("\n\n") if p.strip()]
+    for i, part in enumerate(parts):
+        if i>0:
+            await _asyncio.sleep(delay)
+        await update.message.reply_text(part)
 
 
 async def _user_worker(cid, q):
@@ -227,6 +235,7 @@ def sheet_sync(u):
             row[idx["chat_id"]] = cid
             row[idx["name"]] = d.get("name", "")
             row[idx["email"]] = d.get("email", "")
+            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
             row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
             row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
             row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
@@ -595,25 +604,27 @@ async def send_free_lesson(update, user):
     if w and w in LESSONS:
         await update.message.reply_text("🧠 Quick warm-up: "+LESSONS[w]["title"]+" — 1 quick drill.")
         await update.message.reply_text("▸ DRILL: {}\n{}".format(LESSONS[w]["steps"][0]["title"], LESSONS[w]["steps"][0]["body"]))
-    lid=None; total=FREE_LESSONS
+    lid=None; total=None
     feats = _safe_features()
     if user["pos"] < min(FREE_LESSONS, len(feats)):
         lid = feats[user["pos"]]
     else:
         cl = course_lessons("Sing Without Limits"); lid = cl[user["pos"]]; total = len(cl)
-    await update.message.reply_text(lesson_text(lid, user["pos"] + 1, total, user=user))
-    await update.message.reply_text(outcomes_text(lid))
+    await _chunky_reply(update, lesson_text(lid, user["pos"] + 1, total or FREE_LESSONS, user=user))
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Done", callback_data=f"done:{lid}"),
+         InlineKeyboardButton("⏭ Next", callback_data=f"next:{lid}")],
+        [InlineKeyboardButton("🔁 Repeat", callback_data=f"repeat:{lid}"),
+         InlineKeyboardButton("🎤 Voice check", callback_data=f"voice:{lid}")]
+    ])
+    await update.message.reply_text(outcomes_text(lid), reply_markup=kb)
     # bump streak after free lesson
-    cid = str(update.effective_chat.id)
-    streak = _bump_streak(load_users(), cid)
+    sid=str(update.effective_chat.id)
+    streak=_bump_streak(load_users(), sid)
     if streak and streak % 3 == 0:
         await update.message.reply_text(f"🔥 {streak}-day streak — most singers quit by day 2. You’re building something real.")
 async def send_path_lesson(update, user, cid=None):
-    # adaptive warm-up BEFORE path lesson
-    w=weak_skill(user)
-    if w and w in LESSONS:
-        await update.message.reply_text("🧠 Quick warm-up: "+LESSONS[w]["title"]+" — 1 quick drill.")
-        await update.message.reply_text("▸ DRILL: {}\n{}".format(LESSONS[w]["steps"][0]["title"], LESSONS[w]["steps"][0]["body"]))
+    cid = cid or str(update.effective_chat.id)
     if user["path_i"] >= len(user["path"]):
         return await update.message.reply_text(
             "🏆 Adaptive path complete.\n\n"
@@ -623,20 +634,20 @@ async def send_path_lesson(update, user, cid=None):
             "• `level` — re-assess and rebuild your path")
     lid = user["path"][user["path_i"]]; user["path_i"] += 1
     user["lessons_done"] = user.get("lessons_done", 0) + 1
-    # persist WITHOUT clobbering other users (save_users expects the full dict)
-    allu = load_users(); allu[cid] = user; save_users(allu)
-    # path-relative numbering (course lookup is best-effort, never a hard dependency)
+    allu = load_users(); allu[cid or str(update.effective_chat.id)] = user; save_users(allu)
     pos = user["path_i"]; total = len(user["path"])
-    # bump streak after paid path lesson
-    streak = _bump_streak(allu, cid)
+    await _chunky_reply(update, lesson_text(lid, pos, total, user=user))
+    kb=InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Done", callback_data=f"done:{lid}"),
+         InlineKeyboardButton("⏭ Next", callback_data=f"next:{lid}")],
+        [InlineKeyboardButton("🔁 Repeat", callback_data=f"repeat:{lid}"),
+         InlineKeyboardButton("🎤 Voice check", callback_data=f"voice:{lid}")]
+    ])
+    await update.message.reply_text(outcomes_text(lid) + "\n\n(type 'next' for your next adaptive lesson)", reply_markup=kb)
+    sid=cid or str(update.effective_chat.id)
+    streak=_bump_streak(allu, sid)
     if streak and streak % 3 == 0:
-        w=weak_skill(user)
-        if w:
-            await update.message.reply_text("🔥 Streak-safe: your weakest skill is today's warm-up so you keep momentum.")
-        await asyncio.sleep(0.4)
         await update.message.reply_text(f"🔥 {streak}-day streak — most singers quit by day 2. You’re building something real.")
-    await update.message.reply_text(lesson_text(lid, pos, total, user=user))
-    await update.message.reply_text(outcomes_text(lid) + "\n\n(type 'next' for your next adaptive lesson)")
 
 INNER = 32
 def _row(s): return "║ " + s[:INNER].ljust(INNER) + " ║"
@@ -853,6 +864,32 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         await update.message.reply_text("Couldn't analyze that clip — try a shorter one (5–10 sec).")
+
+
+async def on_callback(update, context):
+    q=update.callback_query; data=(q.data or "")
+    await q.answer()
+    cid=str(q.message.chat.id)
+    u=load_users(); user=u.get(cid,{})
+    parts=data.split(":"); action=parts[0]; lid=int(parts[1]) if len(parts)>1 and parts[1].isdigit() else None
+    if action=="done":
+        passed=True; mr=record_attempt(user, lid or 0, passed)
+        user["needs_attention"]=any(v.get("weak") for v in user.get("mastery",{}).values())
+        nxt=weak_skill(user)
+        save_users(u)
+        text=f"📊 Done — mastery {mastery_score(mr)}%." + ("\nWe'll nudge this skill again soon." if nxt is not None else "")
+        await q.edit_message_text(text)
+    elif action=="next":
+        user["stage"]="menu"; save_users(u)
+        await q.edit_message_text("Next →")
+        cl=course_lessons("Sing Without Limits"); user["pos"]=user.get("pos",0)+1; user["lessons_done"]=user.get("lessons_done",0)+1; save_users(u)
+        if user["pos"] < len(cl):
+            await send_free_lesson(q, user)
+    elif action=="repeat":
+        await q.edit_message_text("Repeating lesson...")
+        await send_free_lesson(q, user)
+    elif action=="voice":
+        await q.edit_message_text("🎤 Send a 5–10 sec voice note singing a note, and I'll score it.")
 
 async def healthz(request):
     return web.Response(text="ok")
