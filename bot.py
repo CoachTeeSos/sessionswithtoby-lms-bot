@@ -308,17 +308,24 @@ def verify_payment(tx_ref):
 
 async def _start(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
-    # If returning user, offer resume/reset instead of wiping
+    # returning user: never wipe progress on /start; only refresh stale fields
     if cid in u:
         user = u[cid]
+        if not user.get("ref_code"):
+            user["ref_code"] = make_ref_code(cid)
+        for k in ("first_name", "name"):
+            if update.effective_user.first_name and not user.get(k):
+                user[k] = (update.effective_user.first_name or "").strip()
+                if k == "name":
+                    user["first_name"] = user[k].split()[0]
+        save_users(u)
         if user.get("paid"):
-            nm = first_name(user); g = goal_line(user); done = user.get("lessons_done", 0)
+            nm = first_name(user); done = user.get("lessons_done", 0)
             return await update.message.reply_text(
                 f"Good to see you again, {nm}. 🙏\n\n"
                 f"You've done {done} lessons — pick up wherever you left off.\n\n"
                 f"Commands:\n• next — your next lesson\n• topics — browse all courses\n• profile — your card\n• reset — start fresh")
-        # free user returning: preserve progress
-        nm = first_name(user); done = user.get("lessons_done", 0); stage = user.get("stage","start")
+        nm = first_name(user); done = user.get("lessons_done", 0)
         return await update.message.reply_text(
             f"Welcome back, {nm}. 🙏\n\nYou’ve done {done} lessons. Pick up right where you left off.\n\n"
             f"Commands:\n• next — your next lesson\n• topics — browse all courses\n• profile — your card\n• reset — start fresh")
