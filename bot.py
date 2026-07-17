@@ -496,8 +496,13 @@ async def _msg(update, ctx):
         return await update.message.reply_text("🏆 Free path complete! Unlock above to keep going on the full journey.")
 
 async def send_free_lesson(update, user):
-    cl = course_lessons("Sing Without Limits"); lid = cl[user["pos"]]
-    await update.message.reply_text(lesson_text(lid, user["pos"] + 1, len(cl)))
+    lid=None; total=FREE_LESSONS
+    feats = _safe_features()
+    if user["pos"] < min(FREE_LESSONS, len(feats)):
+        lid = feats[user["pos"]]
+    else:
+        cl = course_lessons("Sing Without Limits"); lid = cl[user["pos"]]; total = len(cl)
+    await update.message.reply_text(lesson_text(lid, user["pos"] + 1, total))
     await update.message.reply_text(outcomes_text(lid))
 async def send_path_lesson(update, user, cid=None):
     if user["path_i"] >= len(user["path"]):
