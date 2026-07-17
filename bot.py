@@ -315,16 +315,13 @@ async def _start(update, ctx):
             nm = first_name(user); g = goal_line(user); done = user.get("lessons_done", 0)
             return await update.message.reply_text(
                 f"Good to see you again, {nm}. 🙏\n\n"
-                f"You're working toward {g}. You've done {done} lessons so far — pick up wherever you left off.\n\n"
-                f"Use `next` for your next lesson, `profile` for your card, or `topics` to browse.\n\n"
-                f"If you want to start completely fresh, type `reset`.")
+                f"You've done {done} lessons — pick up wherever you left off.\n\n"
+                f"Commands:\n• next — your next lesson\n• topics — browse all courses\n• profile — your card\n• reset — start fresh")
         # free user returning: preserve progress
         nm = first_name(user); done = user.get("lessons_done", 0); stage = user.get("stage","start")
         return await update.message.reply_text(
-            f"Welcome back, {nm}. 🙏\n\n"
-            f"You're at stage: {stage}, {done} lessons done.\n\n"
-            f"Type `continue` to pick up where you left off, or `reset` to start fresh.\n\n"
-            f"Or just send a command: `next`, `topics`, `search <keyword>`.")
+            f"Welcome back, {nm}. 🙏\n\nYou’ve done {done} lessons. Pick up right where you left off.\n\n"
+            f"Commands:\n• next — your next lesson\n• topics — browse all courses\n• profile — your card\n• reset — start fresh")
     # parse referral deep-link: /start <REFCODE>
     args = getattr(ctx, "args", None) or []
     payload = (args[0] if args else "").strip().upper()
@@ -349,14 +346,14 @@ async def _start(update, ctx):
     _admin_event({"type": "signup", "chat_id": cid, "country": None, "ts": datetime.now(timezone.utc).isoformat()})
     extras = []
     if telegram_name:
-        extras.append(f"Good to meet you, {telegram_name.split()[0]}.")
+        extras.append(f"Hey, {telegram_name.split()[0]}.")
     if referred_by:
         extras.append("\U0001F49B You joined through a friend's link — they'll earn when you unlock. Welcome!")
-    extras.append("Which country are you in? (e.g. Nigeria, USA, UK)")
-    extras.append("\U0001F4E4 **Fast, private flow:** country → email → start learning. No password, no app.")
+    extras.append("Which country are you in? e.g. Nigeria, USA, UK")
+    extras.append("After that: pick your email, then pick how much time you have per session.")
     await update.message.reply_text(
-        "\U0001F3A4 Welcome to SessionsWithToby — I coach your voice, one real lesson at a time.\n\n" + "\n".join(extras))
-
+        "\U0001F3A4 Welcome to Sessions With Toby — I coach your voice, one real lesson at a time.\n\n"
+        + "\n".join(extras))
 async def _msg(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
     if cid not in u: return await _start(update, ctx)
@@ -390,8 +387,8 @@ async def _msg(update, ctx):
         if low in ("profile", "card", "refer"): return await profile(update, ctx)
         if low == "next": return await send_path_lesson(update, user, cid)
         if low == "topics":
-            lines = "\n".join(f"  {i+1}. {c['title']} ({len(c['lessons'])} lessons)" for i, c in enumerate(COURSES))
-            return await update.message.reply_text("📚 All courses — reply the number to dive in:\n" + lines)
+            lines = "\n".join(f"  {i+1}. {c['title']}" for i, c in enumerate(COURSES))
+            return await update.message.reply_text("All courses — reply the number to open:\n" + lines)
         if low == "level":
             user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0; save_users(u)
             return await update.message.reply_text("Re-assessing. " + assess_prompt(0))
@@ -409,8 +406,8 @@ async def _msg(update, ctx):
     if user["stage"] == "browse":
         if low == "topics":
             user["stage"] = "menu"; save_users(u)
-            lines = "\n".join(f"  {i+1}. {c['title']} ({len(c['lessons'])} lessons)" for i, c in enumerate(COURSES))
-            return await update.message.reply_text("📚 All courses — reply the number to dive in:\n" + lines)
+            lines = "\n".join(f"  {i+1}. {c['title']}" for i, c in enumerate(COURSES))
+            return await update.message.reply_text("All courses — reply the number to open:\n" + lines)
         if low.isdigit():
             c = course_by_title(user.get("browse_course", "")); n = int(low)
             if c and 1 <= n <= len(c["lessons"]):
@@ -429,10 +426,21 @@ async def _msg(update, ctx):
         user["name"] = text; user["first_name"] = text.split()[0]; user["stage"] = "email"; save_users(u)
         return await update.message.reply_text(f"Nice, {text.split()[0]}! Drop your email so I can save your progress:")
     if user["stage"] == "email":
-        if "@" not in low: return await update.message.reply_text("That's not an email — try again:")
-        user["email"] = text; user["stage"] = "learning"; save_users(u)
+        if "@" not in low: return await update.message.reply_text("That’s not an email — try again please.")
+        user["email"] = text; user["stage"] = "time"; save_users(u)
+        await update.message.reply_text("How much time can you spare per session?\n\nReply:\n• 10\n• 20\n• 30\n• 45\nor just type minutes.")
+        return
+    if user["stage"] == "time":
+        try:
+            mins = int(low)
+        except ValueError:
+            mins = 20
+        mins = max(5, min(120, mins))
+        user["mins_per_session"] = mins; user["stage"] = "learning"; save_users(u)
         cl = course_lessons("Sing Without Limits")
-        await update.message.reply_text(f"✅ In. Starting *Sing Without Limits* ({len(cl)} lessons). First up:")
+        await update.message.reply_text(
+            f"Got it — {mins}-minute sessions. That’s more than enough.\n\n"
+            f"Starting your first lesson now 🎤")
         return await send_free_lesson(update, user)
     if user["stage"] == "await_payment":
         # payment disabled for inspection: auto-advance
@@ -446,8 +454,8 @@ async def _msg(update, ctx):
         if low == "repeat": return await send_free_lesson(update, user)
         if low == "share": return await _share(update, ctx)
         if low == "topics":
-            lines = "\n".join(f"  {i+1}. {c['title']} ({len(c['lessons'])} lessons)" for i, c in enumerate(COURSES))
-            return await update.message.reply_text("📚 All courses — reply the number to dive in:\n" + lines)
+            lines = "\n".join(f"  {i+1}. {c['title']}" for i, c in enumerate(COURSES))
+            return await update.message.reply_text("All courses — reply the number to open:\n" + lines)
         if low.startswith("search "):
             kw = low[7:].strip(); hits = search_lessons(kw)
             if not hits: return await update.message.reply_text("No lessons matched. Try another word.")
@@ -557,17 +565,16 @@ async def _share(update, ctx):
     ccy = price_for(user.get("country") or "US")["currency"]; sym = CCY[ccy]
     done = user.get("lessons_done", 0)
     text = (
-        f"Today I trained my voice with SessionsWithToby — {done} lessons done so far. "
-        f"🎤 If you want this too, tap the link and I'll get a reward when you unlock.\n\n"
-        f"{ref_link}"
+        f"I just trained my voice with Sessions With Toby — {done} lesson{'s' if done!=1 else ''} done. "
+        f"🎤 If you want this, tap the link and send it as your WhatsApp status / Story. "
+        f"When someone joins from my link and unlocks, I earn {sym}{reward}.\n\n{ref_link}"
     )
     wa = "https://wa.me/?text=" + __import__("urllib.parse").quote(text)
     await update.message.reply_text(
-        f"\U0001F4E2 Share today's win to WhatsApp status / Story\n\n"
-        f"• {text[:180]}...\n\n"
-        f"Your reward when a friend unlocks: {sym}{reward}\n"
-        f"\U0001F517 Deep link tracks your invite automatically\n\n"
-        f"\U0001F3F7 Remember to tap 'Copy' then send as Status, or just open:\n{wa}")
+        "Share to WhatsApp status / Story\n\n"
+        f"• Copy-paste this:\n{text}\n\n"
+        f"• Or open WhatsApp direct:\n{wa}\n\n"
+        f"Reward per unlock: {sym}{reward}")
 
 async def flw_webhook(request):
     try: data = await request.json()
