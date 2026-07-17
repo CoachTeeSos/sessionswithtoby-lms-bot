@@ -259,7 +259,7 @@ def lesson_text(lid, pos, total, user=None):
     c = l.get("course", "")
     chead = COURSE_ICON.get(c, "🎵")
     outcome = l.get("displayOutcome") or (l.get("outcomes") or [""])[0]
-    scn = (f"Imagine you're {l.get('title','')} in a real session: {outcome[0].lower()}{outcome[1:]}.")
+    scn = (f"Real session: {l.get('title','')} — that's why this drill matters: {outcome[0].lower()}{outcome[1:]}.")
     bar = progress_bar(pos, total)
     note = f"\n💡 {len(steps)} step{'s' if len(steps)!=1 else ''} selected for your {user.get('mins_per_session','')} min session." if cap else ""
     b = (f"{chead} Lesson {pos} of {total} — {l.get('title','')} "
@@ -392,10 +392,12 @@ async def _msg(update, ctx):
         user["path"] = [lid for ctitle, sl in TIERS[tier] for lid in course_lessons(ctitle)[sl]]
         user["path_i"] = 0; user["stage"] = "menu"; save_users(u)
         await update.message.reply_text(
-            f"\U0001F9ED Assessment done. Your level: *{tier}*.\n"
+            f"🧠 Assessment done. Your level: *{tier}*.\n"
             f"Since your goal is to {goal_line(user)}, I've built a {len(user['path'])}-lesson path aimed right at that.\n\n"
-            f"Commands now:\n• `next` — your adaptive lesson\n• `topics` — browse all 8 courses\n• `search <keyword>` — find any lesson\n• `level` — re-assess\n• `profile` — your shareable Vocal Profile Card")
-        return await send_path_lesson(update, user, cid)
+            f"Quick style: which best fits your singing?\n"
+            f"1) Church / Gospel\n2) Classical\n3) Secular / Pop\n\nReply 1, 2, or 3 — or type 'skip'.")
+        user["stage"] = "style_pick"; save_users(u)
+        return
 
     # ----- menu -----
     if user["stage"] == "menu":
