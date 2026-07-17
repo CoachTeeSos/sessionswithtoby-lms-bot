@@ -98,6 +98,8 @@ async def profile(update, ctx):
     await _enqueue(update, ctx, _profile)
 async def share_cmd(update, ctx):
     await _enqueue(update, ctx, _share)
+async def reset_cmd(update, ctx):
+    await _enqueue(update, ctx, _reset)
 
 def load_users():
     with _USER_LOCK:
@@ -307,13 +309,23 @@ def verify_payment(tx_ref):
 
 async def _start(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
-    # returning paid user: never wipe progress
-    if cid in u and u[cid].get("paid"):
-        nm = first_name(u[cid]); g = goal_line(u[cid]); done = u[cid].get("lessons_done", 0)
+    # If returning user, offer resume/reset instead of wiping
+    if cid in u:
+        user = u[cid]
+        if user.get("paid"):
+            nm = first_name(user); g = goal_line(user); done = user.get("lessons_done", 0)
+            return await update.message.reply_text(
+                f"Good to see you again, {nm}. 🙏\n\n"
+                f"You're working toward {g}. You've done {done} lessons so far — pick up wherever you left off.\n\n"
+                f"Use `next` for your next lesson, `profile` for your card, or `topics` to browse.\n\n"
+                f"If you want to start completely fresh, type `reset`.")
+        # free user returning: preserve progress
+        nm = first_name(user); done = user.get("lessons_done", 0); stage = user.get("stage","start")
         return await update.message.reply_text(
-            f"Good to see you again, {nm}. 🙏\n\n"
-            f"You're working toward {g}. You've done {done} lessons so far — pick up wherever you left off.\n\n"
-            f"Use `next` for your next lesson, `profile` for your card, or `topics` to browse.")
+            f"Welcome back, {nm}. 🙏\n\n"
+            f"You're at stage: {stage}, {done} lessons done.\n\n"
+            f"Type `continue` to pick up where you left off, or `reset` to start fresh.\n\n"
+            f"Or just send a command: `next`, `topics`, `search <keyword>`.")
     # parse referral deep-link: /start <REFCODE>
     args = getattr(ctx, "args", None) or []
     payload = (args[0] if args else "").strip().upper()
@@ -330,7 +342,8 @@ async def _start(update, ctx):
               "ref_code": ref_code, "referred_by": referred_by, "referrals": [],
               "referrals_paid": 0, "referral_earnings": 0, "lessons_done": 0,
               "first_name": telegram_name.split()[0] if telegram_name else "", "goal": 0,
-              "joined": datetime.now(timezone.utc).isoformat(), "pending_reward_msg": ""}
+              "joined": datetime.now(timezone.utc).isoformat(), "pending_reward_msg": "",
+              "streak": 0, "last_lesson_ts": None}
     if referred_by and referred_by in u:
         u[referred_by].setdefault("referrals", []).append(cid)
     save_users(u)
@@ -450,6 +463,11 @@ async def _msg(update, ctx):
                 user["pos"] = pos + 1; user["lessons_done"] = user.get("lessons_done", 0) + 1; save_users(u)
                 return await send_free_lesson(update, user)
             return await update.message.reply_text("🏆 Free path complete! Unlock above to keep going on the full journey.")
+        if low == "continue":
+            return await update.message.reply_text(f"Resuming from: {user.get('stage','start')}. {user.get('lessons_done', 0)} lessons done.")
+        if low == "reset":
+            if cid in u: del u[cid]; save_users(u)
+            return await update.message.reply_text("🗑️ Progress wiped. Starting fresh.\n\nWhich country are you in? (e.g. Nigeria, USA, UK)")
         if _key_hits(text):
             hits = search_lessons(low)
             if hits:
@@ -504,6 +522,12 @@ async def send_free_lesson(update, user):
         cl = course_lessons("Sing Without Limits"); lid = cl[user["pos"]]; total = len(cl)
     await update.message.reply_text(lesson_text(lid, user["pos"] + 1, total))
     await update.message.reply_text(outcomes_text(lid))
+    # bump streak after free lesson
+    cid = str(update.effective_chat.id)
+    streak = _bump_streak(load_users(), cid)
+    if streak and streak % 3 == 0:
+        await asyncio.sleep(0.4)
+        await update.message.reply_text(f"🔥 {streak}-day streak — most singers quit by day 2. You’re building something real.")
 async def send_path_lesson(update, user, cid=None):
     if user["path_i"] >= len(user["path"]):
         return await update.message.reply_text("🏆 You've completed your adaptive path! Use `topics` or `search` to keep going.")
@@ -513,6 +537,11 @@ async def send_path_lesson(update, user, cid=None):
     allu = load_users(); allu[cid] = user; save_users(allu)
     # path-relative numbering (course lookup is best-effort, never a hard dependency)
     pos = user["path_i"]; total = len(user["path"])
+    # bump streak after paid path lesson
+    streak = _bump_streak(allu, cid)
+    if streak and streak % 3 == 0:
+        await asyncio.sleep(0.4)
+        await update.message.reply_text(f"🔥 {streak}-day streak — most singers quit by day 2. You’re building something real.")
     await update.message.reply_text(lesson_text(lid, pos, total))
     await update.message.reply_text(outcomes_text(lid) + "\n\n(type 'next' for your next adaptive lesson)")
 
@@ -596,6 +625,23 @@ def _admin_auth(request):
     t = request.headers.get("X-Admin-Token", "")
     if not _ADMIN_TOKEN or t != _ADMIN_TOKEN:
         raise web.HTTPUnauthorized(text="unauthorized")
+def _bump_streak(u, cid):
+    user = u.get(cid)
+    if not user:
+        return 0
+    today = datetime.now(timezone.utc).date().isoformat()
+    last = user.get("last_lesson_ts")
+    last_day = datetime.fromisoformat(last).date().isoformat() if last else None
+    prev = int(user.get("streak") or 0)
+    if last_day == today:
+        return prev
+    if last_day == (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=1)).date().isoformat():
+        user["streak"] = prev + 1
+    else:
+        user["streak"] = 1
+    user["last_lesson_ts"] = datetime.now(timezone.utc).isoformat()
+    save_users(u)
+    return int(user.get("streak") or 0)
 
 async def admin_stats(request):
     _admin_auth(request)
