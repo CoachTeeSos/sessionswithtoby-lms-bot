@@ -705,6 +705,7 @@ async def healthz(request):
 
 
 async def main():
+    print("[boot] starting bot + web server")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("profile", profile))
@@ -713,8 +714,11 @@ async def main():
     app.add_handler(CommandHandler("share", share_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
     await app.initialize(); await app.start()
-    asyncio.create_task(app.updater.start_polling())
-    web_app = web.Application(); web_app.router.add_post("/flutterwave-webhook", flw_webhook)
+    # single-shot polling guard: avoid accidental double-start inside one process
+    if not getattr(app.updater, "_running", False):
+        app.updater._running = True
+        await app.updater.start_polling()
+    web_app = web.Application()
     web_app.router.add_get("/healthz", healthz)
     web_app.router.add_get("/admin/stats", admin_stats)
     web_app.router.add_get("/admin/users/recent", admin_recent)
@@ -722,7 +726,7 @@ async def main():
     web_app.router.add_post("/admin/users/forget", admin_forget)
     runner = web.AppRunner(web_app); await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8000))).start()
-    print("Bot + webhook listening")
+    print("[boot] bot + web server listening")
     while True: await asyncio.sleep(3600)
 
 if __name__ == "__main__":
