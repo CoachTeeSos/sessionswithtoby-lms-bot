@@ -256,7 +256,7 @@ def lesson_text(lid, pos, total, user=None):
         mins = (user or {}).get("mins_per_session")
         if mins:
             cap = 1 if mins < 15 else 2 if mins < 30 else 3 if mins < 45 else 5 if mins < 60 else 8
-    steps = [s for s in l.get("steps", [])][:cap or 3]
+    steps = [s for s in l.get("steps", [])] if cap is None else [s for s in l.get("steps", [])][:cap]
     c = l.get("course", "")
     chead = COURSE_ICON.get(c, "🎵")
     outcome = l.get("displayOutcome") or (l.get("outcomes") or [""])[0]
@@ -270,7 +270,7 @@ def lesson_text(lid, pos, total, user=None):
     for i, s in enumerate(steps, 1):
         t = s.get("type", "teach"); icon=STEP_ICON.get(t,"▸"); label=STEP_LABEL.get(t,"STEP")
         body=s.get("body",""); 
-        if cap is not None and len(body)>160: body=body[:157]+"..."
+        if cap is None and len(body)>500: body=body[:497]+"..."
         b += f"\n{icon} {label} {i}/{len(steps)}: {s.get('title','')}\n{body}\n"
     return b.strip()
 
