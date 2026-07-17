@@ -96,6 +96,8 @@ async def msg(update, ctx):
     await _enqueue(update, ctx, _msg)
 async def profile(update, ctx):
     await _enqueue(update, ctx, _profile)
+async def share_cmd(update, ctx):
+    await _enqueue(update, ctx, _share)
 
 def load_users():
     with _USER_LOCK:
@@ -321,22 +323,27 @@ async def _start(update, ctx):
             if ou.get("ref_code") == payload and oid != cid:
                 referred_by = oid; break
     ref_code = (u.get(cid, {}) or {}).get("ref_code") or make_ref_code(cid)
-    u[cid] = {"stage": "country", "name": "", "email": "", "course": 1, "pos": 0,
+    telegram_name = (update.effective_user.first_name or "").strip()
+    u[cid] = {"stage": "country", "name": telegram_name, "email": "", "course": 1, "pos": 0,
               "country": None, "paid": False, "pay_ref": None, "upsold": False,
               "tier": None, "assess_q": 0, "assess_score": 0, "path": [], "path_i": 0,
               "ref_code": ref_code, "referred_by": referred_by, "referrals": [],
               "referrals_paid": 0, "referral_earnings": 0, "lessons_done": 0,
-              "first_name": "", "goal": 0,
+              "first_name": telegram_name.split()[0] if telegram_name else "", "goal": 0,
               "joined": datetime.now(timezone.utc).isoformat(), "pending_reward_msg": ""}
     if referred_by and referred_by in u:
         u[referred_by].setdefault("referrals", []).append(cid)
     save_users(u)
-    extra = (" \U0001F49B You joined through a friend's link \u2014 they'll earn when you unlock. Welcome!"
-             if referred_by else
-             " Finish 3 free lessons, then share your profile card to earn when friends join.")
+    _admin_event({"type": "signup", "chat_id": cid, "country": None, "ts": datetime.now(timezone.utc).isoformat()})
+    extras = []
+    if telegram_name:
+        extras.append(f"Good to meet you, {telegram_name.split()[0]}.")
+    if referred_by:
+        extras.append("\U0001F49B You joined through a friend's link — they'll earn when you unlock. Welcome!")
+    extras.append("Which country are you in? (e.g. Nigeria, USA, UK)")
+    extras.append("\U0001F4E4 **Fast, private flow:** country → email → start learning. No password, no app.")
     await update.message.reply_text(
-        "\U0001F3A4 Welcome to SessionsWithToby \u2014 I coach your voice, one real lesson at a time." + extra +
-        "\n\nWhich country are you in? (e.g. Nigeria, USA, UK)")
+        "\U0001F3A4 Welcome to SessionsWithToby — I coach your voice, one real lesson at a time.\n\n" + "\n".join(extras))
 
 async def _msg(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
@@ -422,12 +429,32 @@ async def _msg(update, ctx):
         if verify_payment(user.get("pay_ref")):
             user["paid"] = True; user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0
             credit_referral(u, cid); save_users(u)
+            _admin_event({"type": "pay", "chat_id": cid, "tx_ref": user.get("pay_ref"), "country": user.get("country"), "ts": datetime.now(timezone.utc).isoformat()})
             return await update.message.reply_text("🎉 Payment confirmed! Quick assessment so I serve you right.\n\n" + assess_prompt(0))
         return await update.message.reply_text("🔍 I checked with Flutterwave and this payment isn't confirmed yet. Finish the payment link, then reply 'paid' again. If you already paid, wait a minute and try once more.")
 
     # ----- free lessons -----
     if user["stage"] == "learning":
         if low == "repeat": return await send_free_lesson(update, user)
+        if low == "share": return await _share(update, ctx)
+        if low == "topics":
+            lines = "\n".join(f"  {i+1}. {c['title']} ({len(c['lessons'])} lessons)" for i, c in enumerate(COURSES))
+            return await update.message.reply_text("📚 All courses — reply the number to dive in:\n" + lines)
+        if low.startswith("search "):
+            kw = low[7:].strip(); hits = search_lessons(kw)
+            if not hits: return await update.message.reply_text("No lessons matched. Try another word.")
+            return await update.message.reply_text("🔎 Found:\n" + "\n".join(f"  • {h['title']} ({h['course']})" for h in hits))
+        if low == "next":
+            cl = course_lessons("Sing Without Limits"); pos = user.get("pos", 0)
+            if pos < len(cl):
+                user["pos"] = pos + 1; user["lessons_done"] = user.get("lessons_done", 0) + 1; save_users(u)
+                return await send_free_lesson(update, user)
+            return await update.message.reply_text("🏆 Free path complete! Unlock above to keep going on the full journey.")
+        if _key_hits(text):
+            hits = search_lessons(low)
+            if hits:
+                lid = hits[0]["id"]; title = hits[0]["title"]; course = hits[0]["course"]
+                return await update.message.reply_text(f"🔥 Jumping to: {title} [{course}]\n\n{lesson_text(lid, 1, 1)}\n\n{outcomes_text(lid)}\n\n(type 'next' for your next lesson)")
         if low != "done":
             if is_struggling(text):
                 return await update.message.reply_text(
@@ -449,6 +476,9 @@ async def _msg(update, ctx):
             nm = first_name(user)
             last_lid = cl[user["pos"] - 1]
             last_title = LESSONS.get(last_lid, {}).get("title", "your last lesson")
+            payment_link = link or ""
+            if not payment_link:
+                payment_link = "Payment's having a moment — just reply and I'll get you sorted."
             await update.message.reply_text(
                 f"{nm}, real talk — you finished all 3 free lessons and you didn't quit. "
                 f"That's the part most people never get past. Respect. 👏\n\n"
@@ -458,7 +488,7 @@ async def _msg(update, ctx):
                 f"and a shareable Vocal Profile Card.\n"
                 f"For your region it's {sym}{tier['amount']} — about what one in-person lesson with me would cost.\n\n"
                 f"No pressure, no timer. Take a day, take a week. When you're ready, your unlock link is right here 👇\n"
-                + (f"{link}" if link else "Payment's having a moment — just reply and I'll get you sorted."))
+                + (f"{payment_link}" if payment_link else ""))
             return
         if user["pos"] < len(cl):
             await update.message.reply_text(f"Locked in. Lesson {user['pos']} next — keep the momentum going. 🎤")
@@ -510,6 +540,26 @@ async def _profile(update, ctx):
     await update.message.reply_text(render_profile(user))
     await update.message.reply_text(f"\U0001F517 Your invite link (tap to share):\n{link}\n\nRefer a friend, earn {CCY[ccy]}{reward} each time they unlock \U0001F4B0")
     await update.message.reply_text("\U0001F4E4 Share this card on your status/Story — every friend who joins via your link earns you a reward when they unlock.")
+async def _share(update, ctx):
+    u = load_users(); cid = str(update.effective_chat.id)
+    if cid not in u: return await _start(update, ctx)
+    user = u[cid]
+    ref_link = f"https://t.me/{BOT_USERNAME}?start={user.get('ref_code','')}"
+    reward = REFERRAL_REWARD.get(user.get("country") or "US", 3)
+    ccy = price_for(user.get("country") or "US")["currency"]; sym = CCY[ccy]
+    done = user.get("lessons_done", 0)
+    text = (
+        f"Today I trained my voice with SessionsWithToby — {done} lessons done so far. "
+        f"🎤 If you want this too, tap the link and I'll get a reward when you unlock.\n\n"
+        f"{ref_link}"
+    )
+    wa = "https://wa.me/?text=" + __import__("urllib.parse").quote(text)
+    await update.message.reply_text(
+        f"\U0001F4E2 Share today's win to WhatsApp status / Story\n\n"
+        f"• {text[:180]}...\n\n"
+        f"Your reward when a friend unlocks: {sym}{reward}\n"
+        f"\U0001F517 Deep link tracks your invite automatically\n\n"
+        f"\U0001F3F7 Remember to tap 'Copy' then send as Status, or just open:\n{wa}")
 
 async def flw_webhook(request):
     try: data = await request.json()
@@ -527,8 +577,100 @@ async def flw_webhook(request):
                 credit_referral(users, cid); save_users(users); break
     return web.Response(text="ok")
 
+# admin API
+_ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+MAX_ADMIN_EVENTS = 200  # ring buffer
+_ADMIN_EVENTS = []
+def _admin_event(ev):
+    _ADMIN_EVENTS.append(ev)
+    if len(_ADMIN_EVENTS) > MAX_ADMIN_EVENTS:
+        del _ADMIN_EVENTS[:-MAX_ADMIN_EVENTS]
+def _admin_ok(data): return web.json_response({"ok": True, **data})
+def _admin_bad(msg, status=400): return web.Response(text=msg, status=status)
+def _admin_auth(request):
+    t = request.headers.get("X-Admin-Token", "")
+    if not _ADMIN_TOKEN or t != _ADMIN_TOKEN:
+        raise web.HTTPUnauthorized(text="unauthorized")
+
+async def admin_stats(request):
+    _admin_auth(request)
+    users = load_users()
+    total = len(users)
+    paid = sum(1 for u in users.values() if u.get("paid"))
+    lessons = sum(int(u.get("lessons_done", 0) or 0) for u in users.values())
+    return _admin_ok({"users": total, "paid": paid, "lessons_done": lessons})
+async def admin_recent(request):
+    _admin_auth(request)
+    limit = int(request.rel_url.query.get("limit", "20"))
+    users = load_users()
+    rows = []
+    for cid, u in users.items():
+        rows.append({
+            "chat_id": cid,
+            "name": u.get("name"),
+            "email": u.get("email"),
+            "country": u.get("country"),
+            "stage": u.get("stage"),
+            "tier": u.get("tier"),
+            "paid": bool(u.get("paid")),
+            "lessons_done": int(u.get("lessons_done", 0) or 0),
+            "joined": u.get("joined"),
+        })
+    rows.sort(key=lambda r: r.get("joined") or "", reverse=True)
+    return _admin_ok({"items": rows[: max(1, min(limit, 100))]})
+async def admin_events(request):
+    _admin_auth(request)
+    limit = int(request.rel_url.query.get("limit", "50"))
+    return _admin_ok({"items": list(reversed(_ADMIN_EVENTS[-max(1, min(limit, 100)):]))})
+async def admin_forget(request):
+    _admin_auth(request)
+    try: body = await request.json()
+    except Exception: return _admin_bad("bad json", 400)
+    cid = str(body.get("chat_id", "")).strip()
+    if not cid: return _admin_bad("chat_id required", 400)
+    users = load_users()
+    if cid in users:
+        u = users.pop(cid)
+        _admin_event({"type": "forget", "chat_id": cid, "name": u.get("name"), "ts": datetime.now(timezone.utc).isoformat()})
+        save_users(users)
+    return _admin_ok({"deleted": cid in users})
+
+# keyboard helpers
+_BTN = lambda text, cmd: f"[{text}](tg://bot_command?start={cmd})"
+
+COMMANDS_HELP = (
+    "\U0001F4AC Commands now available:\n"
+    f"{_BTN('📚 topics', 'topics')} browse all courses\n"
+    f"{_BTN('🔎 search', 'search Riffs')} find any lesson\n"
+    f"{_BTN('▶️ next', 'next')} your next lesson\n"
+    f"{_BTN('🪪 profile', 'profile')} your vocal profile card\n"
+    f"{_BTN('🔄 level', 'level')} retake the level check"
+)
+
+# universal featured lessons for pre-pay/browse use
+FEATURED_IDS = [10, 9, 3, 28, 41, 15, 54]  # mix, head, vibrato, riffs, runs, stage, mindset
+
+def _safe_features():
+    hits = [l for l in FEATURED_IDS if l in LESSONS]
+    if not hits:
+        hits = [l["id"] for l in list(LESSONS.values())[:6]]
+    return hits
+
+def _featured_menu():
+    lines = ["🔥 Jump straight into what singers actually want:\n"]
+    for lid in _safe_features():
+        l = LESSONS.get(lid, {})
+        lines.append(f"• {l.get('title')} [{l.get('course')}]")
+    lines.append("\nPaste a title or keyword to open it, or use `search <word>`.")
+    return "\n".join(lines)
+
+def _key_hits(text):
+    t = (text or "").lower()
+    return any(k in t for k in ("high note", "high notes", "mix", "mixed", "vibrato", "riffs", "runs", "belt", "belting", "falsetto", "head voice", "chest voice", "agility", "runs", "riff"))
+
 async def healthz(request):
     return web.Response(text="ok")
+
 
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -536,11 +678,16 @@ async def main():
     app.add_handler(CommandHandler("profile", profile))
     app.add_handler(CommandHandler("card", profile))
     app.add_handler(CommandHandler("refer", profile))
+    app.add_handler(CommandHandler("share", share_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
     await app.initialize(); await app.start()
     asyncio.create_task(app.updater.start_polling())
     web_app = web.Application(); web_app.router.add_post("/flutterwave-webhook", flw_webhook)
     web_app.router.add_get("/healthz", healthz)
+    web_app.router.add_get("/admin/stats", admin_stats)
+    web_app.router.add_get("/admin/users/recent", admin_recent)
+    web_app.router.add_get("/admin/events", admin_events)
+    web_app.router.add_post("/admin/users/forget", admin_forget)
     runner = web.AppRunner(web_app); await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8000))).start()
     print("Bot + webhook listening")
