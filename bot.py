@@ -99,11 +99,6 @@ async def profile(update, ctx):
 
 def load_users():
     with _USER_LOCK:
-        if SHEET_ID:
-            data = sheet_read()
-            if data is not None:
-                _USERS_CACHE.clear(); _USERS_CACHE.update(data)
-            return dict(_USERS_CACHE) or {}
         try:
             data = json.load(open(USERS)) if os.path.exists(USERS) else {}
             _USERS_CACHE.clear(); _USERS_CACHE.update(data)
@@ -115,9 +110,8 @@ def load_users():
 def save_users(u):
     with _USER_LOCK:
         _USERS_CACHE.clear(); _USERS_CACHE.update(u)
-        if SHEET_ID:
-            sheet_write(u)
-            return
+        # human-readable Google Sheet mirror (dashboard only; users.json is source of truth)
+        sheet_sync(u)
         # ensure storage dir exists (self-heals Railway volume mounts)
         d = os.path.dirname(USERS)
         if d and not os.path.isdir(d):
@@ -134,7 +128,11 @@ def save_users(u):
         json.dump(u, open(tmp, "w"), indent=2)
         os.replace(tmp, USERS)
 
-# --- Google Sheet backend (live: token at /data/google_token.json) ---
+# --- Google Sheet backend (human-readable mirror of users.json) ---
+# The Sheet is a READ-ONLY dashboard for the coach; users.json stays the source of truth.
+SHEET_COLS = ["chat_id","name","email","country","joined","paid","tier","lessons_done",
+              "goal","stage","referred_by","ref_code","referrals_paid","referral_earnings"]
+GOAL_TXT = {1:"sing w/o embarrassment",2:"sound good performing",3:"go pro & get paid"}
 def _sheets_svc():
     import google.oauth2.credentials as oc
     from google.auth.transport.requests import Request
@@ -144,23 +142,60 @@ def _sheets_svc():
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
     return build("sheets", "v4", credentials=creds), creds
-def sheet_read():
+def _resolve_sheet_id():
+    sid = os.environ.get("USERS_SHEET_ID", "").strip()
+    if sid:
+        return sid
+    pid = os.path.join(os.path.dirname(USERS) or "/data", ".sheet_id")
+    if os.path.exists(pid):
+        return open(pid).read().strip()
+    if os.environ.get("SHEET_AUTOCREATE") == "1":
+        svc, _ = _sheets_svc()
+        sheet = svc.spreadsheets().create(
+            body={"properties": {"title": "SessionsWithToby — Students"}}).execute()
+        open(pid, "w").write(sheet["spreadsheetId"])
+        print("[sheet] auto-created:", sheet.get("spreadsheetUrl"))
+        return sheet["spreadsheetId"]
+    return ""
+def sheet_sync(u):
+    sid = _resolve_sheet_id()
+    if not sid:
+        return
     try:
         svc, _ = _sheets_svc()
-        res = svc.spreadsheets().values().get(spreadsheetId=SHEET_ID, range="Users!A:Z").execute()
-        rows = res.get("values", [])
-        return {r[0]: json.loads(r[1]) for r in rows[1:] if len(r) >= 2}
-    except Exception as e:
-        print("sheet_read err:", e); return None
-def sheet_write(u):
-    try:
-        svc, _ = _sheets_svc()
-        vals = [["chat_id", "data_json"]] + [[k, json.dumps(v)] for k, v in u.items()]
+        existing = svc.spreadsheets().values().get(spreadsheetId=sid, range="A:Z").execute().get("values", [])
+        cols = list(existing[0]) if existing else list(SHEET_COLS)
+        for c in SHEET_COLS:
+            if c not in cols:
+                cols.append(c)
+        idx = {c: i for i, c in enumerate(cols)}
+        rows = {}
+        for r in existing[1:]:
+            if r:
+                rows[r[0]] = list(r) + [""] * (len(cols) - len(r))
+        for cid, d in u.items():
+            row = rows.get(cid, [""] * len(cols))
+            row[idx["chat_id"]] = cid
+            row[idx["name"]] = d.get("name", "")
+            row[idx["email"]] = d.get("email", "")
+            row[idx["country"]] = d.get("country", "")
+            row[idx["joined"]] = d.get("joined", "")
+            row[idx["paid"]] = "YES" if d.get("paid") else "no"
+            row[idx["tier"]] = d.get("tier") or ""
+            row[idx["lessons_done"]] = d.get("lessons_done", 0)
+            row[idx["goal"]] = GOAL_TXT.get(d.get("goal"), "")
+            row[idx["stage"]] = d.get("stage", "")
+            row[idx["referred_by"]] = d.get("referred_by", "")
+            row[idx["ref_code"]] = d.get("ref_code", "")
+            row[idx["referrals_paid"]] = d.get("referrals_paid", 0)
+            row[idx["referral_earnings"]] = d.get("referral_earnings", 0)
+            rows[cid] = row
+        grid = [cols] + [rows[k] for k in sorted(rows)]
         svc.spreadsheets().values().update(
-            spreadsheetId=SHEET_ID, range="Users!A:Z",
-            valueInputOption="RAW", body={"values": vals}).execute()
+            spreadsheetId=sid, range="A1",
+            valueInputOption="RAW", body={"values": grid}).execute()
     except Exception as e:
-        print("sheet_write err:", e)
+        print("sheet_sync err:", e)
 
 def course_lessons(title):
     c = next((c for c in COURSES if c["title"].lower() == title.lower()), COURSES[0])
