@@ -2,9 +2,8 @@
 """
 SessionsWithToby — Telegram LMS bot (v3: dynamic, behavior-adaptive, payment-gated)
 Flow:
-  /start -> country -> name -> email -> 3 free lessons
-  -> upsell (geo-priced Flutterwave) -> await_payment (gated)
-  -> ON PAY: skill-level quiz (behavioral) -> places tier -> dynamic menu
+  /start -> country -> name -> email -> all free lessons
+  -> adaptive assessment -> dynamic menu
        * search <kw>  : find lessons by keyword
        * topics       : list 8 courses, pick one
        * next         : adaptive next lesson for their tier
@@ -37,7 +36,7 @@ CCY = {"NGN": "₦", "USD": "$", "GBP": "£", "GHS": "GH₵", "CAD": "CA$", "KES
 COUNTRY_MAP = {"nigeria": "NG", "ghana": "GH", "usa": "US", "united states": "US",
                "uk": "GB", "united kingdom": "GB", "england": "GB", "canada": "CA",
                "kenya": "KE", "south africa": "ZA"}
-FREE_LESSONS = 3
+FREE_LESSONS = 9999
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "SessionsWithTobyBot")
 REFERRAL_REWARD = {"NG": 1000, "GH": 16, "US": 3, "GB": 3, "CA": 4, "KE": 300, "ZA": 30}
 def make_ref_code(cid): return "SWT" + hashlib.md5(cid.encode()).hexdigest()[:6].upper()
@@ -386,7 +385,7 @@ async def _msg(update, ctx):
             f"Commands now:\n• `next` — your adaptive lesson\n• `topics` — browse all 8 courses\n• `search <keyword>` — find any lesson\n• `level` — re-assess\n• `profile` — your shareable Vocal Profile Card")
         return await send_path_lesson(update, user, cid)
 
-    # ----- paid menu -----
+    # ----- menu -----
     if user["stage"] == "menu":
         if low in ("profile", "card", "refer"): return await profile(update, ctx)
         if low == "next": return await send_path_lesson(update, user, cid)
@@ -436,15 +435,11 @@ async def _msg(update, ctx):
         await update.message.reply_text(f"✅ In. Starting *Sing Without Limits* ({len(cl)} lessons). First up:")
         return await send_free_lesson(update, user)
     if user["stage"] == "await_payment":
-        if low != "paid":
-            return await update.message.reply_text("Reply 'paid' after completing the payment link above to unlock everything.")
-        # do NOT trust the user — re-verify with Flutterwave using the stored tx_ref
-        if verify_payment(user.get("pay_ref")):
-            user["paid"] = True; user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0
-            credit_referral(u, cid); save_users(u)
-            _admin_event({"type": "pay", "chat_id": cid, "tx_ref": user.get("pay_ref"), "country": user.get("country"), "ts": datetime.now(timezone.utc).isoformat()})
-            return await update.message.reply_text("🎉 Payment confirmed! Quick assessment so I serve you right.\n\n" + assess_prompt(0))
-        return await update.message.reply_text("🔍 I checked with Flutterwave and this payment isn't confirmed yet. Finish the payment link, then reply 'paid' again. If you already paid, wait a minute and try once more.")
+        # payment disabled for inspection: auto-advance
+        user["paid"] = True; user["stage"] = "assess"; user["assess_q"] = 0; user["assess_score"] = 0
+        credit_referral(u, cid); save_users(u)
+        _admin_event({"type": "pay", "chat_id": cid, "tx_ref": user.get("pay_ref"), "country": user.get("country"), "ts": datetime.now(timezone.utc).isoformat()})
+        return await update.message.reply_text("🎉 Payment confirmed! Quick assessment so I serve you right.\n\n" + assess_prompt(0))
 
     # ----- free lessons -----
     if user["stage"] == "learning":
@@ -486,28 +481,7 @@ async def _msg(update, ctx):
                 f"I read every reply and steer you from there.")
         cl = course_lessons("Sing Without Limits"); user["pos"] += 1
         user["lessons_done"] = user.get("lessons_done", 0) + 1; save_users(u)
-        if user["pos"] == FREE_LESSONS and not user["upsold"]:
-            user["upsold"] = True; save_users(u)
-            tier = price_for(user["country"]); link, ref = create_flutter_payment(user["email"], user["name"], tier, cid)
-            user["pay_ref"] = ref; user["stage"] = "await_payment"; save_users(u)
-            sym = CCY[tier["currency"]]
-            nm = first_name(user)
-            last_lid = cl[user["pos"] - 1]
-            last_title = LESSONS.get(last_lid, {}).get("title", "your last lesson")
-            payment_link = link or ""
-            if not payment_link:
-                payment_link = "Payment's having a moment — just reply and I'll get you sorted."
-            await update.message.reply_text(
-                f"{nm}, real talk — you finished all 3 free lessons and you didn't quit. "
-                f"That's the part most people never get past. Respect. 👏\n\n"
-                f"Your last one was '{last_title}'. If that already felt different in your voice, "
-                f"the full path is where it actually locks in.\n\n"
-                f"What's inside when you unlock: all 8 courses, your own adaptive lesson path, "
-                f"and a shareable Vocal Profile Card.\n"
-                f"For your region it's {sym}{tier['amount']} — about what one in-person lesson with me would cost.\n\n"
-                f"No pressure, no timer. Take a day, take a week. When you're ready, your unlock link is right here 👇\n"
-                + (f"{payment_link}" if payment_link else ""))
-            return
+        # payment temporarily removed for inspection — keep learning
         if user["pos"] < len(cl):
             await update.message.reply_text(f"Locked in. Lesson {user['pos']} next — keep the momentum going. 🎤")
             return await send_free_lesson(update, user)
