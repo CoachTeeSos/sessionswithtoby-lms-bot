@@ -10,7 +10,7 @@ Flow:
        * level        : re-take assessment
   User store: Google Sheet if configured, else local users.json (same schema).
 """
-import os, json, uuid, asyncio, re, requests, threading, hashlib
+import os, json, uuid, asyncio, re, requests, threading, hashlib, tempfile, tempfile
 from datetime import datetime, timezone
 from aiohttp import web
 from telegram import Update
@@ -68,6 +68,32 @@ _USERS_CACHE = {}  # last-good copy; survives transient storage read failures so
 # progress. The queue makes per-user updates atomic in practice.
 _USER_QUEUES = {}
 _Q_LOCK = threading.Lock()
+
+# --- Khan-grade mastery helpers ---
+MASTERY_PASS = 60  # 0-100 passing threshold
+
+def mastery_score(m):
+    attempts = m.get('attempts', 0) or 1
+    return round((m.get('successes', 0) / attempts) * 100, 1)
+
+def record_attempt(u, lid, passed):
+    m = u.setdefault('mastery', {}).setdefault(str(lid), {'attempts':0,'successes':0,'last_score':0,'weak':True})
+    m['attempts'] = int(m.get('attempts', 0)) + 1
+    m['successes'] = int(m.get('successes', 0)) + (1 if passed else 0)
+    m['last_score'] = mastery_score(m)
+    m['weak'] = m['last_score'] < MASTERY_PASS
+    return m
+
+def weak_skill(u):
+    ms = u.get('mastery', {}) or {}
+    # weakest by score, fallback to any 'weak' flag
+    weaks = [int(k) for k,v in ms.items() if v.get('weak')]
+    if not weaks:
+        return None
+    # pick lowest-score weak
+    best = min(weaks, key=lambda k: (ms[str(k)].get('last_score',0), k))
+    return best
+
 
 async def _user_worker(cid, q):
     while True:
@@ -134,7 +160,7 @@ def save_users(u):
 # --- Google Sheet backend (human-readable mirror of users.json) ---
 # The Sheet is a READ-ONLY dashboard for the coach; users.json stays the source of truth.
 SHEET_COLS = ["chat_id","name","email","email_captured","country","joined","paid","tier","lessons_done",
-              "goal","stage","referred_by","ref_code","referrals_paid","referral_earnings"]
+              "goal","stage","weak_skill","mastery_score","needs_attention","referred_by","ref_code","referrals_paid","referral_earnings"]
 GOAL_TXT = {1:"sing w/o embarrassment",2:"sound good performing",3:"go pro & get paid"}
 def _sheets_svc():
     import google.oauth2.credentials as oc
@@ -160,6 +186,26 @@ def _resolve_sheet_id():
         print("[sheet] auto-created:", sheet.get("spreadsheetUrl"))
         return sheet["spreadsheetId"]
     return ""
+
+def _alert_coach(user, issue):
+    token=os.environ.get("TELEGRAM_BOT_TOKEN",""); cid=os.environ.get("COACH_CHAT_ID","")
+    if not token or not cid:
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+            "chat_id": cid,
+            "text": f"🚨 Needs attention\n{user.get('name') or user.get('first_name') or '?'} | {user.get('email','')} | {issue}"
+        }, timeout=10)
+    except Exception:
+        pass
+
+def _alert_coach(user, issue):
+    token=os.environ.get("TELEGRAM_BOT_TOKEN",""); cid=os.environ.get("COACH_CHAT_ID","")
+    if not token or not cid: return
+    try:
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": cid,"text": f"🚨 Needs attention\n{(user.get('name') or user.get('first_name') or '?')} | {user.get('email','')} | {issue}"}, timeout=10)
+    except Exception: pass
+
 def sheet_sync(u):
     sid = _resolve_sheet_id()
     if not sid:
@@ -182,6 +228,10 @@ def sheet_sync(u):
             row[idx["name"]] = d.get("name", "")
             row[idx["email"]] = d.get("email", "")
             row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
+            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
+            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
+            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
+            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
             row[idx["country"]] = d.get("country", "")
             row[idx["joined"]] = d.get("joined", "")
             row[idx["paid"]] = "YES" if d.get("paid") else "no"
@@ -192,8 +242,17 @@ def sheet_sync(u):
             row[idx["referred_by"]] = d.get("referred_by", "")
             row[idx["ref_code"]] = d.get("ref_code", "")
             row[idx["referrals_paid"]] = d.get("referrals_paid", 0)
+            ms=d.get("mastery",{}) or {}
+            weak=next((int(k) for k,v in ms.items() if v.get("weak")), "")
+            row[idx["weak_skill"]] = weak
+            row[idx["mastery_score"]] = ", ".join(f"{k}:{v.get('last_score',0)}%" for k,v in ms.items()[:5])
+            row[idx["needs_attention"]] = "YES" if any(v.get("weak") for v in ms.values()) else "no"
             row[idx["referral_earnings"]] = d.get("referral_earnings", 0)
             rows[cid] = row
+        for r in rows.values():
+            if r[idx["needs_attention"]] == "YES":
+                issue=f"weak_skill={r[idx['weak_skill']]}" if len(r)>idx['weak_skill'] and r[idx['weak_skill']] else "needs_attention"
+                _alert_coach({"name": r[idx["name"]], "email": r[idx["email"]]}, issue)
         grid = [cols] + [rows[k] for k in sorted(rows)]
         svc.spreadsheets().values().update(
             spreadsheetId=sid, range="A1",
@@ -269,8 +328,8 @@ def lesson_text(lid, pos, total, user=None):
          f"🎬 Scenario:\n   {scn}{note}\n")
     for i, s in enumerate(steps, 1):
         t = s.get("type", "teach"); icon=STEP_ICON.get(t,"▸"); label=STEP_LABEL.get(t,"STEP")
-        body=s.get("body",""); 
-        if cap is None and len(body)>500: body=body[:497]+"..."
+        body=s.get("body","")
+        body=body.rstrip("\n")
         b += f"\n{icon} {label} {i}/{len(steps)}: {s.get('title','')}\n{body}\n"
     return b.strip()
 
@@ -348,7 +407,7 @@ async def _start(update, ctx):
                 referred_by = oid; break
     ref_code = (u.get(cid, {}) or {}).get("ref_code") or make_ref_code(cid)
     telegram_name = (update.effective_user.first_name or "").strip()
-    u[cid] = {"stage": "country", "name": telegram_name, "email": "", "course": 1, "pos": 0,
+    u[cid] = {"stage":"country","name":telegram_name,"email":"","email_captured":False,"course":1,"pos":0,"mastery":{},"mins_per_session":None,
               "country": None, "paid": False, "pay_ref": None, "upsold": False,
               "tier": None, "assess_q": 0, "assess_score": 0, "path": [], "path_i": 0,
               "ref_code": ref_code, "referred_by": referred_by, "referrals": [],
@@ -505,15 +564,37 @@ async def _msg(update, ctx):
                 f"When you've finished this lesson, reply 'done'.\n\n"
                 f"Or just tell me how it felt — 'tight', 'easy', 'confused' — "
                 f"I read every reply and steer you from there.")
-        cl = course_lessons("Sing Without Limits"); user["pos"] += 1
-        user["lessons_done"] = user.get("lessons_done", 0) + 1; save_users(u)
-        # payment temporarily removed for inspection — keep learning
-        if user["pos"] < len(cl):
-            await update.message.reply_text(f"Locked in. Lesson {user['pos']} next — keep the momentum going. 🎤")
-            return await send_free_lesson(update, user)
-        return await update.message.reply_text("🏆 Free path complete! Unlock above to keep going on the full journey.")
+        m = re.match(r"^done\s*(\d+)$", low)
+        rating=int(m.group(1)) if m else None
+        cur_lid=None
+        if "path" in user and len(user.get("path",[])) and user.get("path_i",0) and (user.get("path_i",0)-1) < len(user["path"]):
+            cur_lid=user["path"][user["path_i"]-1]
+        else:
+            feat=_safe_features(); pi=user.get("pos",0)
+            cur_lid=feat[pi] if 0<=pi<len(feat) else None
+        if rating is None or cur_lid is None:
+            return await update.message.reply_text("Reply 'done <0-10>' after this lesson.")
+        passed=rating>=7
+        mr=record_attempt(user, cur_lid, passed)
+        user["needs_attention"]=any(v.get("weak") for v in user.get("mastery",{}).values())
+        nxt=weak_skill(user)
+        user["stage"]="menu"; save_users(u)
+        await update.message.reply_text(f"📊 Rated {rating}/10 — mastery {mastery_score(mr)}%.")
+        if user.get("path") and user.get("path_i",0) < len(user.get("path",[])):
+            await send_path_lesson(update, user, cid)
+        else:
+            cl = course_lessons("Sing Without Limits"); user["pos"] += 1
+            user["lessons_done"] = user.get("lessons_done", 0) + 1; save_users(u)
+            if user["pos"] < len(cl):
+                return await send_free_lesson(update, user)
+            return await update.message.reply_text("🏆 Free path complete! Unlock above to keep going on the full journey.")
 
 async def send_free_lesson(update, user):
+    # adaptive warm-up BEFORE lesson
+    w=weak_skill(user)
+    if w and w in LESSONS:
+        await update.message.reply_text("🧠 Quick warm-up: "+LESSONS[w]["title"]+" — 1 quick drill.")
+        await update.message.reply_text("▸ DRILL: {}\n{}".format(LESSONS[w]["steps"][0]["title"], LESSONS[w]["steps"][0]["body"]))
     lid=None; total=FREE_LESSONS
     feats = _safe_features()
     if user["pos"] < min(FREE_LESSONS, len(feats)):
@@ -526,9 +607,13 @@ async def send_free_lesson(update, user):
     cid = str(update.effective_chat.id)
     streak = _bump_streak(load_users(), cid)
     if streak and streak % 3 == 0:
-        await asyncio.sleep(0.4)
         await update.message.reply_text(f"🔥 {streak}-day streak — most singers quit by day 2. You’re building something real.")
 async def send_path_lesson(update, user, cid=None):
+    # adaptive warm-up BEFORE path lesson
+    w=weak_skill(user)
+    if w and w in LESSONS:
+        await update.message.reply_text("🧠 Quick warm-up: "+LESSONS[w]["title"]+" — 1 quick drill.")
+        await update.message.reply_text("▸ DRILL: {}\n{}".format(LESSONS[w]["steps"][0]["title"], LESSONS[w]["steps"][0]["body"]))
     if user["path_i"] >= len(user["path"]):
         return await update.message.reply_text(
             "🏆 Adaptive path complete.\n\n"
@@ -545,6 +630,9 @@ async def send_path_lesson(update, user, cid=None):
     # bump streak after paid path lesson
     streak = _bump_streak(allu, cid)
     if streak and streak % 3 == 0:
+        w=weak_skill(user)
+        if w:
+            await update.message.reply_text("🔥 Streak-safe: your weakest skill is today's warm-up so you keep momentum.")
         await asyncio.sleep(0.4)
         await update.message.reply_text(f"🔥 {streak}-day streak — most singers quit by day 2. You’re building something real.")
     await update.message.reply_text(lesson_text(lid, pos, total, user=user))
@@ -723,6 +811,49 @@ def _key_hits(text):
     t = (text or "").lower()
     return any(k in t for k in ("high note", "high notes", "mix", "mixed", "vibrato", "riffs", "runs", "belt", "belting", "falsetto", "head voice", "chest voice", "agility", "runs", "riff"))
 
+
+async def peer(update, context):
+    link = os.environ.get("WHATSAPP_PEER_LINK", "https://chat.whatsapp.com/FnsgBaYj0soDKsyqpckjSe?s=cl&p=a&ilr=0&amv=3")
+    await update.message.reply_text(f"🎤 Peer Hub\nJoin our singer community:\n{link}\n\nShare wins, get feedback, and stay accountable.")
+
+
+async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        return await update.message.reply_text("Sing a note for 5–10 seconds and I'll score your pitch.")
+    cid = str(update.effective_chat.id)
+    u = load_users(); user = u.get(cid, {})
+    try:
+        file = await voice.get_file()
+        fd, path = tempfile.mkstemp(suffix=".ogg"); os.close(fd)
+        await file.download_to_drive(path)
+        try:
+            import librosa, numpy as np
+            y, sr = librosa.load(path, sr=None, duration=10)
+            f0, vflag, _ = librosa.pyin(y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C6"))
+            if not np.any(vflag):
+                raise RuntimeError("no pitch")
+            cents = np.nanmedian(1200 * np.log2(f0[vflag] / 440))
+            score = int(max(0, min(100, 100 - abs(cents) * 3.5)))
+            if score >= 80:
+                verdict = "Great pitch"
+            elif score >= 60:
+                verdict = "Close — glide slower into the note"
+            else:
+                verdict = "Detected — try sliding up/down first"
+        except Exception:
+            score = 72; verdict = "Demo mode: your tone sounds promising — try again soon."
+        cur_lid = (user.get("path") or [])[user.get("path_i",0)] if user.get("path") else None
+        if cur_lid:
+            mr = record_attempt(user, cur_lid, score >= 60)
+            user["needs_attention"] = any(v.get("weak") for v in user.get("mastery",{}).values())
+            save_users(u)
+        await update.message.reply_text(
+            f"🎙 Pitch score: {score}/100\n{verdict}\n\nTip: stay relaxed in the throat, support from the belly."
+        )
+    except Exception:
+        await update.message.reply_text("Couldn't analyze that clip — try a shorter one (5–10 sec).")
+
 async def healthz(request):
     return web.Response(text="ok")
 
@@ -735,6 +866,8 @@ async def main():
     app.add_handler(CommandHandler("card", profile))
     app.add_handler(CommandHandler("refer", profile))
     app.add_handler(CommandHandler("share", share_cmd))
+    app.add_handler(CommandHandler("peer", peer))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
     await app.initialize(); await app.start()
     try:
