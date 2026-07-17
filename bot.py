@@ -519,7 +519,12 @@ async def send_free_lesson(update, user):
         await update.message.reply_text(f"🔥 {streak}-day streak — most singers quit by day 2. You’re building something real.")
 async def send_path_lesson(update, user, cid=None):
     if user["path_i"] >= len(user["path"]):
-        return await update.message.reply_text("🏆 You've completed your adaptive path! Use `topics` or `search` to keep going.")
+        return await update.message.reply_text(
+            "🏆 Adaptive path complete.\n\n"
+            "Next moves:\n"
+            "• `topics` — open the next course in progression\n"
+            "• `search <keyword>` — drill only what you need\n"
+            "• `level` — re-assess and rebuild your path")
     lid = user["path"][user["path_i"]]; user["path_i"] += 1
     user["lessons_done"] = user.get("lessons_done", 0) + 1
     # persist WITHOUT clobbering other users (save_users expects the full dict)
