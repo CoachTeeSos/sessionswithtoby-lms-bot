@@ -248,23 +248,31 @@ def is_struggling(text):
     t = (text or "").lower()
     return any(w in t for w in STRUGGLE_WORDS)
 
-def lesson_text(lid, pos, total):
+def lesson_text(lid, pos, total, user=None):
     l = LESSONS.get(lid, {})
-    steps = [s for s in l.get("steps", [])][:3]
+    cap = None
+    if user is not None:
+        mins = (user or {}).get("mins_per_session")
+        if mins:
+            cap = 1 if mins < 15 else 2 if mins < 30 else 3 if mins < 45 else 5 if mins < 60 else 8
+    steps = [s for s in l.get("steps", [])][:cap or 3]
     c = l.get("course", "")
     chead = COURSE_ICON.get(c, "🎵")
     outcome = l.get("displayOutcome") or (l.get("outcomes") or [""])[0]
     scn = (f"Imagine you're {l.get('title','')} in a real session: {outcome[0].lower()}{outcome[1:]}.")
     bar = progress_bar(pos, total)
+    note = f"\n💡 {len(steps)} step{'s' if len(steps)!=1 else ''} selected for your {user.get('mins_per_session','')} min session." if cap else ""
     b = (f"{chead} Lesson {pos} of {total} — {l.get('title','')} "
          f"({l.get('durationMin','')} min) · {c}\n{bar}\n\n"
-         f"🎯 The outcome you'll walk away with:\n   {outcome}\n\n"
-         f"🎬 Use-case scenario:\n   {scn} This lesson is the drill that makes that automatic.\n")
+         f"🎯 Outcome:\n   {outcome}\n\n"
+         f"🎬 Scenario:\n   {scn}{note}\n")
     for i, s in enumerate(steps, 1):
-        t = s.get("type", "teach")
-        icon = STEP_ICON.get(t, "▸"); label = STEP_LABEL.get(t, "STEP")
-        b += f"\n{icon} {label} {i}/{len(steps)}: {s.get('title','')}\n{s.get('body','')[:240]}\n"
+        t = s.get("type", "teach"); icon=STEP_ICON.get(t,"▸"); label=STEP_LABEL.get(t,"STEP")
+        body=s.get("body",""); 
+        if cap is not None and len(body)>160: body=body[:157]+"..."
+        b += f"\n{icon} {label} {i}/{len(steps)}: {s.get('title','')}\n{body}\n"
     return b.strip()
+
 def outcomes_text(lid):
     l = LESSONS.get(lid, {})
     pt = l.get("performanceTask", {})
@@ -418,7 +426,7 @@ async def _msg(update, ctx):
         if low.isdigit():
             c = course_by_title(user.get("browse_course", "")); n = int(low)
             if c and 1 <= n <= len(c["lessons"]):
-                lid = c["lessons"][n-1]; await update.message.reply_text(lesson_text(lid, n, len(c["lessons"])))
+                lid = c["lessons"][n-1]; await update.message.reply_text(lesson_text(lid, n, len(c["lessons"]), user=user))
                 return await update.message.reply_text(outcomes_text(lid))
             return await update.message.reply_text(f"Pick a number 1–{len(c['lessons']) if c else 0}.")
         return await update.message.reply_text("Reply a lesson number, or 'topics' to go back.")
@@ -509,7 +517,7 @@ async def send_free_lesson(update, user):
         lid = feats[user["pos"]]
     else:
         cl = course_lessons("Sing Without Limits"); lid = cl[user["pos"]]; total = len(cl)
-    await update.message.reply_text(lesson_text(lid, user["pos"] + 1, total))
+    await update.message.reply_text(lesson_text(lid, user["pos"] + 1, total, user=user))
     await update.message.reply_text(outcomes_text(lid))
     # bump streak after free lesson
     cid = str(update.effective_chat.id)
@@ -536,7 +544,7 @@ async def send_path_lesson(update, user, cid=None):
     if streak and streak % 3 == 0:
         await asyncio.sleep(0.4)
         await update.message.reply_text(f"🔥 {streak}-day streak — most singers quit by day 2. You’re building something real.")
-    await update.message.reply_text(lesson_text(lid, pos, total))
+    await update.message.reply_text(lesson_text(lid, pos, total, user=user))
     await update.message.reply_text(outcomes_text(lid) + "\n\n(type 'next' for your next adaptive lesson)")
 
 INNER = 32
@@ -578,15 +586,15 @@ async def _share(update, ctx):
     done = user.get("lessons_done", 0)
     text = (
         f"I just trained my voice with Sessions With Toby — {done} lesson{'s' if done!=1 else ''} done. "
-        f"🎤 If you want this, tap the link and send it as your WhatsApp status / Story. "
-        f"When someone joins from my link and unlocks, I earn {sym}{reward}.\n\n{ref_link}"
+        f"Tap the link to try it, then share as your WhatsApp status/Story. "
+        f"When someone joins and unlocks, I earn {sym}{reward}.\n\n{ref_link}"
     )
     wa = "https://wa.me/?text=" + __import__("urllib.parse").quote(text)
     await update.message.reply_text(
-        "Share to WhatsApp status / Story\n\n"
-        f"• Copy-paste this:\n{text}\n\n"
-        f"• Or open WhatsApp direct:\n{wa}\n\n"
-        f"Reward per unlock: {sym}{reward}")
+        f"Your share card\n\n{text}\n\n"
+        f"• Open WhatsApp:\n{wa}\n\n"
+        f"Reward per unlock: {sym}{reward}"
+    )
 
 async def flw_webhook(request):
     try: data = await request.json()
