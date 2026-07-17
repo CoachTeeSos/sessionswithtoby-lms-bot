@@ -8,7 +8,7 @@ Flow:
        * topics       : list 8 courses, pick one
        * next         : adaptive next lesson for their tier
        * level        : re-take assessment
-  User store: Google Sheet if configured, else local users.json (same schema).
+  User store: local users.json
 """
 import os, json, uuid, asyncio, re, requests, threading, hashlib, tempfile
 from datetime import datetime, timezone
@@ -26,7 +26,7 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 if not BOT_TOKEN:
     raise SystemExit("TELEGRAM_BOT_TOKEN is required")
 FLW_HASH = os.environ.get("FLUTTERWAVE_WEBHOOK_HASH", "")
-SHEET_ID = os.environ.get("USERS_SHEET_ID", "")  # optional: Google Sheet backend
+# SHEETBACKEND_REMOVED
 
 PRICE_TIERS = {"NG": {"currency": "NGN", "amount": 5000}, "GH": {"currency": "GHS", "amount": 80},
                "US": {"currency": "USD", "amount": 15}, "GB": {"currency": "GBP", "amount": 12},
@@ -103,6 +103,20 @@ async def _chunky_reply(update, text, delay=0.65):
         await update.message.reply_text(part)
 
 
+async def _emails(update, ctx):
+    u=load_users(); out=[]
+    for cid, d in u.items():
+        em=(d.get("email") or "").strip()
+        if em:
+            out.append(f"{d.get('name') or 'User'} | {em} | captured:{'YES' if d.get('email_captured') else 'no'}")
+    if not out:
+        return await update.message.reply_text("No emails captured yet.")
+    # chunk to avoid 4096 char Telegram limit
+    txt="📧 Emails\n\n"+"\n".join(out)
+    chunks=[txt[i:i+3500] for i in range(0, len(txt), 3500)]
+    for i,chunk in enumerate(chunks):
+        await update.message.reply_text(chunk + ("\n..." if i+1<len(chunks) else ""))
+
 async def _user_worker(cid, q):
     while True:
         update, ctx, handler = await q.get()
@@ -131,6 +145,8 @@ async def profile(update, ctx):
     await _enqueue(update, ctx, _profile)
 async def share_cmd(update, ctx):
     await _enqueue(update, ctx, _share)
+async def emails_cmd(update, ctx):
+    await _enqueue(update, ctx, _emails)
 async def reset_cmd(update, ctx):
     await _enqueue(update, ctx, _reset)
 
@@ -147,8 +163,7 @@ def load_users():
 def save_users(u):
     with _USER_LOCK:
         _USERS_CACHE.clear(); _USERS_CACHE.update(u)
-        # human-readable Google Sheet mirror (dashboard only; users.json is source of truth)
-        sheet_sync(u)
+        # no sheet sync
         # ensure storage dir exists (self-heals Railway volume mounts)
         d = os.path.dirname(USERS)
         if d and not os.path.isdir(d):
@@ -164,110 +179,6 @@ def save_users(u):
         tmp = USERS + ".tmp"
         json.dump(u, open(tmp, "w"), indent=2)
         os.replace(tmp, USERS)
-
-# --- Google Sheet backend (human-readable mirror of users.json) ---
-# The Sheet is a READ-ONLY dashboard for the coach; users.json stays the source of truth.
-SHEET_COLS = ["chat_id","name","email","email_captured","country","joined","paid","tier","lessons_done",
-              "goal","stage","weak_skill","mastery_score","needs_attention","referred_by","ref_code","referrals_paid","referral_earnings"]
-GOAL_TXT = {1:"sing w/o embarrassment",2:"sound good performing",3:"go pro & get paid"}
-def _sheets_svc():
-    import google.oauth2.credentials as oc
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-    creds = oc.Credentials.from_authorized_user_file(
-        os.environ.get("GOOGLE_TOKEN_PATH", "/data/google_token.json"), ["https://www.googleapis.com/auth/spreadsheets"])
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    return build("sheets", "v4", credentials=creds), creds
-def _resolve_sheet_id():
-    sid = os.environ.get("USERS_SHEET_ID", "").strip()
-    if sid:
-        return sid
-    pid = os.path.join(os.path.dirname(USERS) or "/data", ".sheet_id")
-    if os.path.exists(pid):
-        return open(pid).read().strip()
-    if os.environ.get("SHEET_AUTOCREATE") == "1":
-        svc, _ = _sheets_svc()
-        sheet = svc.spreadsheets().create(
-            body={"properties": {"title": "SessionsWithToby — Students"}}).execute()
-        open(pid, "w").write(sheet["spreadsheetId"])
-        print("[sheet] auto-created:", sheet.get("spreadsheetUrl"))
-        return sheet["spreadsheetId"]
-    return ""
-
-def _alert_coach(user, issue):
-    token=os.environ.get("TELEGRAM_BOT_TOKEN",""); cid=os.environ.get("COACH_CHAT_ID","")
-    if not token or not cid:
-        return
-    try:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-            "chat_id": cid,
-            "text": f"🚨 Needs attention\n{user.get('name') or user.get('first_name') or '?'} | {user.get('email','')} | {issue}"
-        }, timeout=10)
-    except Exception:
-        pass
-
-def _alert_coach(user, issue):
-    token=os.environ.get("TELEGRAM_BOT_TOKEN",""); cid=os.environ.get("COACH_CHAT_ID","")
-    if not token or not cid: return
-    try:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": cid,"text": f"🚨 Needs attention\n{(user.get('name') or user.get('first_name') or '?')} | {user.get('email','')} | {issue}"}, timeout=10)
-    except Exception: pass
-
-def sheet_sync(u):
-    sid = _resolve_sheet_id()
-    if not sid:
-        return
-    try:
-        svc, _ = _sheets_svc()
-        existing = svc.spreadsheets().values().get(spreadsheetId=sid, range="A:Z").execute().get("values", [])
-        cols = list(existing[0]) if existing else list(SHEET_COLS)
-        for c in SHEET_COLS:
-            if c not in cols:
-                cols.append(c)
-        idx = {c: i for i, c in enumerate(cols)}
-        rows = {}
-        for r in existing[1:]:
-            if r:
-                rows[r[0]] = list(r) + [""] * (len(cols) - len(r))
-        for cid, d in u.items():
-            row = rows.get(cid, [""] * len(cols))
-            row[idx["chat_id"]] = cid
-            row[idx["name"]] = d.get("name", "")
-            row[idx["email"]] = d.get("email", "")
-            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
-            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
-            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
-            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
-            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
-            row[idx["email_captured"]] = "YES" if d.get("email_captured") else "no"
-            row[idx["country"]] = d.get("country", "")
-            row[idx["joined"]] = d.get("joined", "")
-            row[idx["paid"]] = "YES" if d.get("paid") else "no"
-            row[idx["tier"]] = d.get("tier") or ""
-            row[idx["lessons_done"]] = d.get("lessons_done", 0)
-            row[idx["goal"]] = GOAL_TXT.get(d.get("goal"), "")
-            row[idx["stage"]] = d.get("stage", "")
-            row[idx["referred_by"]] = d.get("referred_by", "")
-            row[idx["ref_code"]] = d.get("ref_code", "")
-            row[idx["referrals_paid"]] = d.get("referrals_paid", 0)
-            ms=d.get("mastery",{}) or {}
-            weak=next((int(k) for k,v in ms.items() if v.get("weak")), "")
-            row[idx["weak_skill"]] = weak
-            row[idx["mastery_score"]] = ", ".join(f"{k}:{v.get('last_score',0)}%" for k,v in ms.items()[:5])
-            row[idx["needs_attention"]] = "YES" if any(v.get("weak") for v in ms.values()) else "no"
-            row[idx["referral_earnings"]] = d.get("referral_earnings", 0)
-            rows[cid] = row
-        for r in rows.values():
-            if r[idx["needs_attention"]] == "YES":
-                issue=f"weak_skill={r[idx['weak_skill']]}" if len(r)>idx['weak_skill'] and r[idx['weak_skill']] else "needs_attention"
-                _alert_coach({"name": r[idx["name"]], "email": r[idx["email"]]}, issue)
-        grid = [cols] + [rows[k] for k in sorted(rows)]
-        svc.spreadsheets().values().update(
-            spreadsheetId=sid, range="A1",
-            valueInputOption="RAW", body={"values": grid}).execute()
-    except Exception as e:
-        print("sheet_sync err:", e)
 
 def course_lessons(title):
     c = next((c for c in COURSES if c["title"].lower() == title.lower()), COURSES[0])
@@ -904,6 +815,8 @@ async def main():
     app.add_handler(CommandHandler("refer", profile))
     app.add_handler(CommandHandler("share", share_cmd))
     app.add_handler(CommandHandler("peer", peer))
+    app.add_handler(CommandHandler("emails", emails_cmd))
+    app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
     await app.initialize(); await app.start()
@@ -923,6 +836,5 @@ async def main():
     while True: await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    # surface where state actually lives so deploy misconfig is obvious in logs
-    print(f"[storage] USERS_PATH={USERS}  SHEET_ID={'set' if SHEET_ID else 'unset'}")
+    print(f"[storage] USERS_PATH={USERS}")
     asyncio.run(main())
