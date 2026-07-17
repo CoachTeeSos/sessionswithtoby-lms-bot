@@ -13,6 +13,7 @@ Flow:
 import os, json, uuid, asyncio, re, requests, threading, hashlib
 from datetime import datetime, timezone
 from aiohttp import web
+import os, signal
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -706,6 +707,15 @@ async def healthz(request):
 
 async def main():
     print("[boot] starting bot + web server")
+    # preflight: kill any orphaned bot.py processes so we don't double-poll Telegram
+    try:
+        for pid_str in os.popen("pgrep -f 'python.*bot\\\\.py'").read().split():
+            pid = int(pid_str)
+            if pid != os.getpid():
+                os.kill(pid, signal.SIGTERM)
+                print(f"[boot] terminated orphan pid {pid}")
+    except Exception as exc:
+        print(f"[boot] preflight kill skipped: {exc}")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("profile", profile))
