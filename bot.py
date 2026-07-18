@@ -103,6 +103,40 @@ async def _chunky_reply(update, text, delay=0.65):
         await update.message.reply_text(part)
 
 
+
+async def _nudge(update, ctx):
+    cid = str(update.effective_chat.id)
+    u = load_users(); user = u.get(cid, {})
+    if not user:
+        return await update.message.reply_text("No progress yet. /start to begin.")
+    w = weak_skill(user)
+    if w and w in LESSONS:
+        txt = "🧠 Today's weak-skill nudge\n" + LESSONS[w]["title"] + "\n\n" + "\n".join(s.get("title","")+"\n"+s.get("body","") for s in LESSONS[w]["steps"][:2])
+        return await update.message.reply_text(txt)
+    await update.message.reply_text("Nice — no weak skills right now. Use /next to keep momentum.")
+
+
+async def _progress(update, ctx):
+    cid = str(update.effective_chat.id)
+    u = load_users(); user = u.get(cid, {})
+    if not user:
+        return await update.message.reply_text("No progress yet. /start to begin.")
+    ms = user.get("mastery", {}) or {}
+    weaks = [int(k) for k, v in ms.items() if v.get("weak")]
+    lines = [
+        f"🎯 Progress — {user.get('name') or 'Singer'}",
+        f"Lessons done: {user.get('lessons_done', 0)}",
+        f"Level: {user.get('tier') or '—'}",
+        f"Streak: {user.get('streak', 0)} days",
+        f"Mastery skills: {len(ms)}",
+    ]
+    if weaks:
+        w = min(weaks, key=lambda k: (ms[str(k)].get('last_score', 0), k))
+        lines.append(f"Weakest skill: {LESSONS.get(w, {}).get('title', w)} ({ms[str(w)].get('last_score', 0)}%)")
+    else:
+        lines.append("No weak skills yet — keep going.")
+    await update.message.reply_text("\n".join(lines))
+
 async def _emails(update, ctx):
     u=load_users(); out=[]
     for cid, d in u.items():
@@ -179,6 +213,13 @@ def save_users(u):
         tmp = USERS + ".tmp"
         json.dump(u, open(tmp, "w"), indent=2)
         os.replace(tmp, USERS)
+        try:
+            backup = USERS + ".bak"
+            if os.path.exists(USERS):
+                import shutil
+                shutil.copy2(USERS, backup)
+        except Exception:
+            pass
 
 def course_lessons(title):
     c = next((c for c in COURSES if c["title"].lower() == title.lower()), COURSES[0])
@@ -347,7 +388,7 @@ async def _start(update, ctx):
     extras.append("Which country are you in? e.g. Nigeria, USA, UK")
     extras.append("After that: pick your email, then pick how much time you have per session.")
     await update.message.reply_text(
-        "\U0001F3A4 Welcome to Sessions With Toby — I coach your voice, one real lesson at a time.\n\n"
+        "\U0001F3A4 Sessions With Toby\n\n"
         + "\n".join(extras))
 async def _msg(update, ctx):
     u = load_users(); cid = str(update.effective_chat.id)
@@ -709,6 +750,9 @@ COMMANDS_HELP = (
     f"{_BTN('🔎 search', 'search Riffs')} find any lesson\n"
     f"{_BTN('▶️ next', 'next')} your next lesson\n"
     f"{_BTN('🪪 profile', 'profile')} your vocal profile card\n"
+    f"{_BTN('📈 progress', 'progress')} mastery snapshot\n"
+    f"{_BTN('🧠 nudge', 'nudge')} weak-skill drill\n"
+    f"{_BTN('📧 emails', 'emails')} captured emails\n"
     f"{_BTN('🔄 level', 'level')} retake the level check"
 )
 
@@ -816,6 +860,8 @@ async def main():
     app.add_handler(CommandHandler("share", share_cmd))
     app.add_handler(CommandHandler("peer", peer))
     app.add_handler(CommandHandler("emails", emails_cmd))
+    app.add_handler(CommandHandler("progress", progress_cmd))
+    app.add_handler(CommandHandler("nudge", nudge_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
