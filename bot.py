@@ -179,6 +179,12 @@ async def profile(update, ctx):
     await _enqueue(update, ctx, _profile)
 async def share_cmd(update, ctx):
     await _enqueue(update, ctx, _share)
+async def progress_cmd(update, ctx):
+    await _enqueue(update, ctx, _progress)
+
+async def nudge_cmd(update, ctx):
+    await _enqueue(update, ctx, _nudge)
+
 async def emails_cmd(update, ctx):
     await _enqueue(update, ctx, _emails)
 async def reset_cmd(update, ctx):
